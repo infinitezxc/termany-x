@@ -35,6 +35,7 @@ import {
   shellExitDisposition,
   sshExitDisposition,
 } from "./shellExit";
+import { SHIFT_ENTER_DATA, isShiftEnterNewline } from "./shiftEnter";
 import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
@@ -881,6 +882,31 @@ function writeTerminalInput(id: string, session: Session, data: string) {
   void run.then(cleanup, cleanup);
 }
 
+/**
+ * Everything xterm emits — plus the synthetic Shift+Enter newline, which
+ * bypasses xterm's encoder — funnels through here: an Enter-containing
+ * keystroke wakes an ended SSH session, every keystroke feeds the agent
+ * activity trackers, and the bytes go to the backend in submit order.
+ */
+function deliverTerminalInput(
+  id: string,
+  session: Session,
+  term: Terminal,
+  sshTarget: string | undefined,
+  data: string
+) {
+  if (sshTarget && session.ended) {
+    if (/[\r\n]/.test(data)) {
+      term.write("\r\n");
+      session.restart?.();
+    }
+    return;
+  }
+  session.pasteUndo.input(data);
+  noteAgentInput(id, data);
+  writeTerminalInput(id, session, data);
+}
+
 export function subscribeAgentActivity(listener: () => void): () => void {
   agentActivityListeners.add(listener);
   ensureAgentActivitySync();
@@ -1417,6 +1443,25 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       undoTerminalSession(id);
       return false;
     }
+    // Shift+Enter inserts a newline instead of submitting. xterm encodes it
+    // as a bare CR — byte-identical to Enter — so intercept it here, where
+    // returning false skips xterm's encoding entirely, and send the same
+    // ESC CR bytes Option+Enter already produces (see shiftEnter.ts).
+    // Runs AFTER the shortcut loop so a user rebind of Shift+Enter still wins.
+    if (isShiftEnterNewline(event)) {
+      // Returning false alone only skips xterm's encoding; without
+      // preventDefault the keystroke would also land in xterm's hidden
+      // textarea as a stray newline, and without stopPropagation it would
+      // keep bubbling to the app-level shortcut listener.
+      event.preventDefault();
+      event.stopPropagation();
+      const live = sessions.get(id);
+      if (live) {
+        if (!(sshTarget && live.ended)) appSelection = null;
+        deliverTerminalInput(id, live, live.term, sshTarget, SHIFT_ENTER_DATA);
+      }
+      return false;
+    }
     return true;
   });
 
@@ -1629,19 +1674,10 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         session.blockedDefaultColorReplies = 0;
       }
     }
-    if (sshTarget && session.ended) {
-      if (/[\r\n]/.test(data)) {
-        term.write("\r\n");
-        session.restart?.();
-      }
-      return;
-    }
     // Any keystroke may move or clear the app's selection; mouse reports
     // (hover, wheel) leave it alone.
-    if (!data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
-    session.pasteUndo.input(data);
-    noteAgentInput(id, data);
-    writeTerminalInput(id, session, data);
+    if (!(sshTarget && session.ended) && !data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
+    deliverTerminalInput(id, session, term, sshTarget, data);
   });
 
   // Select-to-copy only after an actual selection gesture. The old listener
