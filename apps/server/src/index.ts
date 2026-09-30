@@ -30,7 +30,7 @@ import {
 } from "./acpRuntime.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
-import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, testSshProfile } from "./ssh.js";
+import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -2059,6 +2059,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
         sshArgs = prepared.args;
         sshControlPath = prepared.controlPath;
       }
+      sshArgs = sshInteractiveArgsForConnection(sshTarget, sshArgs);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
