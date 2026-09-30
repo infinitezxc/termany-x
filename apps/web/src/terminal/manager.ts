@@ -1350,7 +1350,62 @@ export function applyFontSize(size: number) {
   for (const s of sessions.values()) s.term.options.fontSize = size;
 }
 
+/**
+ * Release a terminal mouse drag whose mouseup never arrived.
+ *
+ * xterm's SelectionService (and its mouse-tracking drag reporting) attach
+ * document-level mousemove/mouseup on mousedown and only stop on mouseup —
+ * mousemove never checks `buttons`. WKWebView on macOS drops that mouseup
+ * when the button is released outside the window, over a native menu or
+ * dialog, or mid window-drag, leaving xterm stuck in drag mode: every later
+ * hover extends a huge selection with no button held. The first mousemove
+ * that reports the primary button up finishes the drag with a synthetic
+ * mouseup before xterm sees the move.
+ */
+let stuckDragGuardInstalled = false;
+function installStuckDragGuard() {
+  if (stuckDragGuardInstalled) return;
+  stuckDragGuardInstalled = true;
+  let primaryDragInTerminal = false;
+  window.addEventListener(
+    "mousedown",
+    (event) => {
+      primaryDragInTerminal =
+        event.button === 0 &&
+        event.target instanceof Element &&
+        event.target.closest(".term-host") !== null;
+    },
+    true,
+  );
+  window.addEventListener("mouseup", () => { primaryDragInTerminal = false; }, true);
+  window.addEventListener(
+    "mousemove",
+    (event) => {
+      if (!primaryDragInTerminal || event.buttons & 1) return;
+      primaryDragInTerminal = false;
+      // Dispatched on the move's target so it bubbles through the term host
+      // (select-to-copy) up to the document, where xterm removes its drag
+      // listeners before this mousemove reaches them.
+      (event.target ?? document).dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: event.buttons,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
+        }),
+      );
+    },
+    true,
+  );
+}
+
 function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
+  installStuckDragGuard();
   const existing = sessions.get(id);
   if (existing) return existing;
 
