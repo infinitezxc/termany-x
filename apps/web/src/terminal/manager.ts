@@ -2341,6 +2341,11 @@ export function disposeSession(id: string) {
   }).catch(() => {});
 }
 
+/** Whether a pane has attached a shell (local or SSH) in this window. */
+export function paneHasShell(paneId: string): boolean {
+  return (sessionIdsByPane.get(paneId)?.size ?? 0) > 0;
+}
+
 /** Close every cached local/SSH session owned by a pane. */
 export function disposePaneSessions(paneId: string) {
   const ids = [...(sessionIdsByPane.get(paneId) ?? new Set([paneId]))];

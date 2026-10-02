@@ -494,7 +494,7 @@ function PaneSlot({
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
         ) : leaf.view === "history" ? (
-          <AgentHistory autoFocus={focused} />
+          <AgentHistory paneId={leaf.id} autoFocus={focused} />
         ) : leaf.view === "usage" ? (
           <AgentUsage />
         ) : leaf.view === "providers" ? (
