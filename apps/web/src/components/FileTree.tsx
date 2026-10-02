@@ -5,7 +5,7 @@ import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
 import { useImeGuard } from "../imeGuard";
 import { revealPath } from "../openExternal";
-import { activeHtab, findLeaf, remoteFilesSession, useStore } from "../state/store";
+import { activeHtab, findLeaf, remoteSessionFor, useStore } from "../state/store";
 import { sendCommand, terminalSessionId } from "../terminal/manager";
 import {
   ChevronIcon,
@@ -35,7 +35,7 @@ function quoteForShell(path: string): string {
 }
 
 /** An /api/fs URL. `remote` is the SSH terminal session whose host the path
- *  lives on (see remoteFilesSession); without it the path is local. */
+ *  lives on (see remoteSessionFor); without it the path is local. */
 function fsUrl(endpoint: string, params: Record<string, string>, remote?: string): string {
   return `${apiUrl()}/api/fs/${endpoint}?${new URLSearchParams(remote ? { ...params, session: remote } : params)}`;
 }
@@ -668,7 +668,7 @@ export function FileTree(props: {
   // Which machine the tree is on follows the pane's connection (or its
   // anchor's). A different machine is a different tree entirely, so it gets
   // its own cache entry and a fresh instance rather than morphing in place.
-  const remote = useStore((s) => remoteFilesSession(s, props.sessionId));
+  const remote = useStore((s) => remoteSessionFor(s, props.sessionId));
   const cacheKey = remote ? `${props.sessionId}@${remote}` : props.sessionId;
   return <FileTreeView key={cacheKey} {...props} remote={remote} cacheKey={cacheKey} />;
 }

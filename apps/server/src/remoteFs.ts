@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { Readable } from "node:stream";
+import type { GitHost } from "./git.js";
 import { shellQuote } from "./ssh.js";
 
 // File-tree access for SSH panes. Every operation is one short POSIX `sh`
@@ -14,6 +15,10 @@ import { shellQuote } from "./ssh.js";
 // of `!` so csh has nothing to expand.
 
 const SSH_TIMEOUT_MS = 15_000;
+// sshd caps sessions per connection (MaxSessions, default 10) and the
+// interactive shell already holds one, so a burst of parallel calls (a git
+// overview across worktrees) queues here instead of failing channel opens.
+const MAX_CONCURRENT_PER_CONNECTION = 6;
 
 /** Expand a leading `~` in $1 the way the user would expect from a shell. */
 const EXPAND_P = 'p=$1; case $p in "~") p=$HOME;; "~/"*) p=$HOME/${p#"~/"};; esac;';
@@ -48,11 +53,13 @@ const LIST_ENTRIES =
 /** $1 = directory (may start with ~). */
 const LIST_SCRIPT = `${EXPAND_P} cd -- "$p" || exit 3; ${LIST_ENTRIES}`;
 
-/** $1 = fallback directory (may be empty). Prefer the live shell's cwd. */
-const LIST_SESSION_SCRIPT =
+/** $1 = fallback directory (may be empty). cd to the live shell's cwd, else
+ *  the fallback, else $HOME. */
+const CD_SESSION =
   `${LIVE_CWD} ${EXPAND_P} ` +
-  '{ [ -n "$c" ] && cd -- "$c" 2>/dev/null; } || { [ -n "$p" ] && cd -- "$p" 2>/dev/null; } || cd || exit 3; ' +
-  LIST_ENTRIES;
+  '{ [ -n "$c" ] && cd -- "$c" 2>/dev/null; } || { [ -n "$p" ] && cd -- "$p" 2>/dev/null; } || cd || exit 3;';
+
+const LIST_SESSION_SCRIPT = `${CD_SESSION} ${LIST_ENTRIES}`;
 
 /** $1 = file, $2 = byte cap. Prints the size on a line, then the content. */
 const READ_SCRIPT =
@@ -135,7 +142,48 @@ function stderrMessage(stderr: string, code: number | null): string {
   return text?.replace(/^[\w/.-]*sh: (?:line )?(?:\d+: )?/, "") || `remote command failed (exit ${code})`;
 }
 
+/**
+ * Run a fixed `sh` script on the host with `args` as $1…; resolves stdout.
+ * Rejects with the script's last stderr line when it exits non-zero.
+ */
+export function remoteSh(
+  sshArgs: string[],
+  script: string,
+  args: string[],
+  options: { input?: string; maxBytes?: number } = {},
+): Promise<Buffer> {
+  return run(sshArgs, remoteShCommand(script, args), { maxBytes: 16 * 1024 * 1024, ...options });
+}
+
+const queues = new Map<string, { active: number; waiting: (() => void)[] }>();
+
+async function limited<T>(sshArgs: string[], task: () => Promise<T>): Promise<T> {
+  const key = sshArgs.join("\0");
+  let queue = queues.get(key);
+  if (!queue) queues.set(key, (queue = { active: 0, waiting: [] }));
+  if (queue.active >= MAX_CONCURRENT_PER_CONNECTION) {
+    await new Promise<void>((resolve) => queue!.waiting.push(resolve));
+  }
+  queue.active++;
+  try {
+    return await task();
+  } finally {
+    queue.active--;
+    const next = queue.waiting.shift();
+    if (next) next();
+    else if (queue.active === 0) queues.delete(key);
+  }
+}
+
 function run(
+  sshArgs: string[],
+  command: string,
+  options: { input?: string; maxBytes: number },
+): Promise<Buffer> {
+  return limited(sshArgs, () => runNow(sshArgs, command, options));
+}
+
+function runNow(
   sshArgs: string[],
   command: string,
   options: { input?: string; maxBytes: number },
@@ -187,6 +235,13 @@ export async function remoteListSession(sshArgs: string[], fallback: string): Pr
     maxBytes: 16 * 1024 * 1024,
   });
   return parseRemoteListing(out.toString("utf8"));
+}
+
+/** The interactive shell's live cwd, else `fallback`, else $HOME. */
+export async function remoteSessionCwd(sshArgs: string[], fallback: string): Promise<string> {
+  const out = (await remoteSh(sshArgs, `${CD_SESSION} pwd`, [fallback])).toString("utf8").trim();
+  if (!out.startsWith("/")) throw new Error("unexpected directory from remote host");
+  return out;
 }
 
 export async function remoteRead(
@@ -263,4 +318,19 @@ export function remoteStream(
       reject(new Error(stderrMessage(stderr, code)));
     });
   });
+}
+
+const GIT_SCRIPT = 'cd -- "$1" || exit 3; shift; exec git -c core.quotepath=false "$@"';
+
+/** git.ts's view of a repo on the SSH host (see withGitHost). */
+export function remoteGitHost(sshArgs: string[]): GitHost {
+  return {
+    git: async (args, cwd) => (await remoteSh(sshArgs, GIT_SCRIPT, [cwd, ...args])).toString("utf8"),
+    readHead: (abs, max) =>
+      remoteRead(sshArgs, abs, max).then(
+        ({ size, content }) => ({ buf: content, size }),
+        () => null,
+      ),
+    path: path.posix,
+  };
 }

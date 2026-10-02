@@ -4,8 +4,8 @@ import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
-import { agentSessionPanes, focusedCwdSession, useStore } from "../state/store";
-import { queueCommand } from "../terminal/manager";
+import { agentSessionPanes, focusedCwdSession, remoteLeafFor, useStore } from "../state/store";
+import { queueCommand, queueCommandWhenShellReady, terminalSessionId } from "../terminal/manager";
 import { AgentIcon, HistoryIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -127,6 +127,7 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
   const addPane = useStore((s) => s.addPane);
   const jumpToResult = useStore((s) => s.jumpToResult);
   const setPaneAgentSession = useStore((s) => s.setPaneAgentSession);
+  const setPaneSshTarget = useStore((s) => s.setPaneSshTarget);
   const workspaces = useStore((s) => s.workspaces);
   const agents = useAgentConfigs().filter((a) => a.enabled);
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "claude");
@@ -141,8 +142,19 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
   const [scopeInfo, setScopeInfo] = useState<ScopeInfo | null | undefined>(undefined);
   const [scope, setScope] = useState<"scoped" | "all">("scoped");
   // The pane this history view was created from, frozen so later focus changes
-  // do not reshuffle the list mid-use.
-  const [gitSession] = useState(() => focusedCwdSession(useStore.getState()));
+  // do not reshuffle the list mid-use. When that pane is an SSH one, the
+  // history is the host's — its agents run there, and so do their resumes.
+  const [{ gitSession, ssh }] = useState(() => {
+    const state = useStore.getState();
+    const id = focusedCwdSession(state);
+    const leaf = id ? remoteLeafFor(state, id) : undefined;
+    return leaf?.sshTarget
+      ? {
+          gitSession: terminalSessionId(leaf.id, leaf.sshTarget),
+          ssh: { target: leaf.sshTarget, label: leaf.sshLabel, session: terminalSessionId(leaf.id, leaf.sshTarget) },
+        }
+      : { gitSession: id, ssh: undefined };
+  });
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -176,7 +188,9 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
         });
         return;
       }
-      const dir = await get(`/api/agent/acp/cwd?cwdFrom=${session}`);
+      // The directory fallback reads this machine's shells; a remote pane
+      // outside a repo just lists everything on its host.
+      const dir = ssh ? null : await get(`/api/agent/acp/cwd?cwdFrom=${session}`);
       if (cancelled) return;
       // A pane sitting in the home dir has no meaningful "here" to scope to.
       if (dir?.cwd && dir.cwd !== dir.home) {
@@ -189,7 +203,7 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [gitSession]);
+  }, [gitSession, ssh]);
 
   const listKey = scope === "scoped" && scopeInfo ? `${agentId}|scoped` : agentId;
   const page = byKey[listKey];
@@ -202,6 +216,7 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
     let cancelled = false;
     setError(false);
     const params = new URLSearchParams({ agent: agentId, limit: String(SESSION_PAGE_SIZE) });
+    if (ssh) params.set("session", ssh.session);
     if (scope === "scoped" && scopeInfo) for (const r of scopeInfo.roots) params.append("root", r);
     fetch(apiPath(`/api/agent-sessions?${params}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -226,7 +241,7 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [agentId, listKey, byKey, scope, scopeInfo]);
+  }, [agentId, listKey, byKey, scope, scopeInfo, ssh]);
 
   const loadMore = () => {
     const current = byKey[listKey];
@@ -238,6 +253,7 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
       limit: String(SESSION_PAGE_SIZE),
       cursor,
     });
+    if (ssh) params.set("session", ssh.session);
     if (scope === "scoped" && scopeInfo) for (const root of scopeInfo.roots) params.append("root", root);
     fetch(apiPath(`/api/agent-sessions?${params}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -340,7 +356,15 @@ export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
     const cwd = s.cwdMissing ? (scope === "scoped" ? scopeInfo?.mainRoot ?? null : null) : s.cwd;
     const paneId = addPane("terminal", agentId);
     if (paneId) {
-      queueCommand(paneId, cwd ? `cd ${shellQuote(cwd)} && ${run}` : run);
+      const command = cwd ? `cd ${shellQuote(cwd)} && ${run}` : run;
+      if (ssh) {
+        // Resume on the host the transcript lives on. The connection may still
+        // be authenticating, so wait for the remote prompt before typing.
+        setPaneSshTarget(paneId, ssh.target, ssh.label);
+        queueCommandWhenShellReady(terminalSessionId(paneId, ssh.target), command);
+      } else {
+        queueCommand(paneId, command);
+      }
       setPaneAgentSession(paneId, { agent: agentId, sessionId: s.sessionId });
     }
   };

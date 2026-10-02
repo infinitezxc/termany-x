@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
-import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage } from "./agentSessions.js";
+import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import {
@@ -31,7 +31,16 @@ import {
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
 import { listSshConnections, listSshProfiles, remoteDirForConnection, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
-import { remoteList, remoteListSession, remoteRead, remoteStream, remoteWrite } from "./remoteFs.js";
+import {
+  remoteGitHost,
+  remoteList,
+  remoteListSession,
+  remoteRead,
+  remoteSessionCwd,
+  remoteSh,
+  remoteStream,
+  remoteWrite,
+} from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -60,7 +69,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiffs, gitOverview, worktreeOverview } from "./git.js";
+import { gitDiffs, gitOverview, withGitHost, worktreeOverview } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { pickFiles } from "./filePicker.js";
 import { testProvider } from "./providerTest.js";
@@ -1495,7 +1504,21 @@ const http = createServer((req, res) => {
       const roots = reqUrl.searchParams.getAll("root").filter(Boolean);
       const cursor = Number(reqUrl.searchParams.get("cursor") ?? 0);
       const limit = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_SESSION_PAGE_SIZE);
-      json(200, await listAgentSessions(agent, roots, cursor, limit));
+      // An SSH pane's history is the one on its host, where its agents run.
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      json(
+        200,
+        remote
+          ? await listRemoteAgentSessions(
+              (script, args) => remoteSh(remote.args, script, args),
+              remote.target,
+              agent,
+              roots,
+              cursor,
+              limit,
+            )
+          : await listAgentSessions(agent, roots, cursor, limit),
+      );
     })().catch(fail);
     return;
   }
@@ -1634,8 +1657,7 @@ const http = createServer((req, res) => {
   // full overview below computes per-worktree diff badges, far too slow for this.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/worktrees") {
     (async () => {
-      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
-      json(200, await worktreeOverview(cwd));
+      json(200, await withSessionGit(reqUrl.searchParams.get("session") ?? "", worktreeOverview));
     })().catch(fail);
     return;
   }
@@ -1649,13 +1671,14 @@ const http = createServer((req, res) => {
   // error when the directory isn't in a repo — an empty state, not a failure.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/overview") {
     (async () => {
-      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
       json(
         200,
-        await gitOverview(cwd, {
-          base: reqUrl.searchParams.get("base") ?? undefined,
-          worktree: reqUrl.searchParams.get("worktree") ?? undefined,
-        }),
+        await withSessionGit(reqUrl.searchParams.get("session") ?? "", (cwd) =>
+          gitOverview(cwd, {
+            base: reqUrl.searchParams.get("base") ?? undefined,
+            worktree: reqUrl.searchParams.get("worktree") ?? undefined,
+          }),
+        ),
       );
     })().catch(fail);
     return;
@@ -1667,10 +1690,9 @@ const http = createServer((req, res) => {
   if (req.method === "POST" && reqUrl.pathname === "/api/git/diffs") {
     readJson(req)
       .then(async (body) => {
-        const cwd = await sessionCwd(String(body?.session ?? ""));
         const files = Array.isArray(body?.files) ? body.files : [];
         json(200, {
-          diffs: await gitDiffs({
+          diffs: await withSessionGit(String(body?.session ?? ""), (cwd) => gitDiffs({
             cwd,
             base: body?.base ? String(body.base) : undefined,
             worktree: body?.worktree ? String(body.worktree) : undefined,
@@ -1679,7 +1701,7 @@ const http = createServer((req, res) => {
               oldPath: f?.oldPath ? String(f.oldPath) : undefined,
               section: String(f?.section ?? "unstaged"),
             })),
-          }),
+          })),
         });
       })
       .catch(fail);
@@ -1890,6 +1912,17 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
  * one persisted for it by the sweep, else home. Anchors the endpoints that act
  * on whatever the focused terminal is currently looking at.
  */
+/**
+ * Run a git query for a pane: in its shell's cwd on this machine, or — for an
+ * SSH pane — in the remote shell's cwd with every git call sent over ssh.
+ */
+async function withSessionGit<T>(sessionId: string, fn: (cwd: string) => Promise<T>): Promise<T> {
+  const remote = remoteFsFor(sessionId);
+  if (!remote) return fn(await sessionCwd(sessionId));
+  const cwd = await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "");
+  return withGitHost(remoteGitHost(remote.args), () => fn(cwd));
+}
+
 async function sessionCwd(sessionId: string): Promise<string> {
   const pty = ptySessions.get(sessionId)?.pty;
   return (

@@ -4,11 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawn as spawnPty } from "node-pty";
+import { execFileSync } from "node:child_process";
+import { listRemoteAgentSessions } from "./agentSessions.js";
+import { gitDiffs, gitOverview, withGitHost } from "./git.js";
 import {
   parseRemoteListing,
+  remoteGitHost,
   remoteList,
   remoteListSession,
   remoteRead,
+  remoteSh,
   remoteStream,
   remoteWrite,
 } from "./remoteFs.js";
@@ -124,5 +129,99 @@ test(
     } finally {
       shell.kill();
     }
+  }),
+);
+
+test(
+  "git overview and diffs run through the remote host",
+  withFakeSsh(async (root) => {
+    const repo = path.join(root, "repo");
+    mkdirSync(repo);
+    const run = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo });
+    run("init", "-q", "-b", "main");
+    writeFileSync(path.join(repo, "a.txt"), "one\n");
+    run("add", ".");
+    run("commit", "-qm", "init");
+    writeFileSync(path.join(repo, "a.txt"), "one\ntwo\n");
+    writeFileSync(path.join(repo, "new.txt"), "fresh\n");
+
+    const host = remoteGitHost([]);
+    const overview = await withGitHost(host, () => gitOverview(path.join(repo)));
+    assert.ok(overview.repo);
+    assert.deepEqual(
+      overview.rows.map((r) => [r.path, r.section, r.additions]),
+      [
+        ["a.txt", "unstaged", 1],
+        ["new.txt", "untracked", 0],
+      ],
+    );
+    const diffs = await withGitHost(host, () =>
+      gitDiffs({
+        cwd: repo,
+        files: [
+          { path: "a.txt", section: "unstaged" },
+          { path: "new.txt", section: "untracked" },
+        ],
+      }),
+    );
+    assert.match(diffs["unstaged:a.txt"].diff, /^\+two$/m);
+    assert.match(diffs["untracked:new.txt"].diff, /^\+fresh$/m);
+    assert.deepEqual(await withGitHost(host, () => gitOverview(root)), { repo: false });
+  }),
+);
+
+test(
+  "agent history is read from the remote host's transcripts",
+  withFakeSsh(async (root) => {
+    const project = path.join(root, "proj");
+    mkdirSync(project);
+    const dir = path.join(root, ".claude", "projects", "-proj");
+    mkdirSync(dir, { recursive: true });
+    const transcript = (id: string, cwd: string, text: string) =>
+      writeFileSync(
+        path.join(dir, `${id}.jsonl`),
+        [
+          JSON.stringify({ type: "user", cwd, gitBranch: "main", message: { content: text } }),
+          JSON.stringify({ type: "assistant", message: { content: "ok" } }),
+        ].join("\n") + "\n",
+      );
+    transcript("11111111-1111-1111-1111-111111111111", project, "hello remote");
+    transcript("22222222-2222-2222-2222-222222222222", path.join(root, "gone"), "deleted worktree");
+    writeFileSync(path.join(dir, "agent-sub.jsonl"), "{}\n");
+
+    const exec = (script: string, args: string[]) => remoteSh([], script, args);
+    const all = await listRemoteAgentSessions(exec, "host-a", "claude");
+    assert.deepEqual(
+      all.sessions?.map((s) => [s.sessionId, s.preview, s.gitBranch, !!s.cwdMissing]).sort(),
+      [
+        ["11111111-1111-1111-1111-111111111111", "hello remote", "main", false],
+        ["22222222-2222-2222-2222-222222222222", "deleted worktree", "main", true],
+      ],
+    );
+    assert.equal(all.nextCursor, null);
+
+    const scoped = await listRemoteAgentSessions(exec, "host-a", "claude", [project], 0, 1);
+    assert.deepEqual(scoped.sessions?.map((s) => s.preview), ["hello remote"]);
+
+    // No transcripts at all on the host is an empty list, not an error.
+    assert.deepEqual(await listRemoteAgentSessions(exec, "host-a", "codex"), { sessions: [], nextCursor: null });
+
+    // codex records the project's AGENTS.md as a user message before the prompt.
+    const day = path.join(root, ".codex", "sessions", "2026", "10", "03");
+    mkdirSync(day, { recursive: true });
+    const userText = (text: string) =>
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
+    writeFileSync(
+      path.join(day, "rollout-2026-10-03T00-00-00-abc.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: project } }),
+        userText(`# AGENTS.md instructions for ${project}\n\n<INSTRUCTIONS>be nice</INSTRUCTIONS>`),
+        userText("<environment_context>…</environment_context>"),
+        userText("fix the login bug"),
+      ].join("\n") + "\n",
+    );
+    const codex = await listRemoteAgentSessions(exec, "host-a", "codex");
+    assert.deepEqual(codex.sessions?.map((s) => [s.sessionId, s.preview]), [["abc", "fix the login bug"]]);
   }),
 );

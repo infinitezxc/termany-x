@@ -816,7 +816,8 @@ function makeNode(title: string, cwdFrom?: string): TreeNode {
 function tabCwdSource(h: HTab): string {
   const leaf = findLeaf(h.layout, h.focused);
   if (!leaf) return firstLeaf(h.layout);
-  return leaf.view && leaf.view !== "terminal" ? (leaf.cwdFrom ?? leaf.id) : leaf.id;
+  // An SSH pane's shell is its own even while it shows another view.
+  return leaf.view && leaf.view !== "terminal" && !leaf.sshTarget ? (leaf.cwdFrom ?? leaf.id) : leaf.id;
 }
 
 /** Same idea one level up: a page's directory is its active tab's directory. */
@@ -2126,12 +2127,10 @@ export const useStore = create<State>((set, get) => ({
             const flip = (p: Pane): Pane => {
               if (p.kind === "split") return { ...p, children: p.children.map(flip) };
               if (p.id !== leafId) return p;
-              // SSH panes only have the two views that can reach the remote
-              // host: its shell and its file tree.
-              if (p.sshTarget) {
-                return { ...p, view: p.view !== "files" && s.railVisibility.files ? "files" : "terminal" };
-              }
-              const next = nextCyclablePaneView(p.view, s.railVisibility);
+              const next = nextCyclablePaneView(
+                p.view,
+                p.sshTarget ? sshPaneVisibility(s.railVisibility) : s.railVisibility,
+              );
               return next ? { ...p, view: next } : p;
             };
             return { ...h, layout: flip(h.layout) };
@@ -2151,7 +2150,7 @@ export const useStore = create<State>((set, get) => ({
             const setView = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view: p.sshTarget && view !== "files" ? "terminal" : view }
+                  ? { ...p, view: p.sshTarget && !SSH_PANE_VIEWS.includes(view) ? "terminal" : view }
                   : p
                 : { ...p, children: p.children.map(setView) };
             return { ...h, layout: setView(h.layout) };
@@ -2533,6 +2532,13 @@ export function focusedCwdSession(s: State): string | undefined {
   return h ? tabCwdSource(h) : undefined;
 }
 
+/** focusedCwdSession, as the SSH terminal session when that pane is remote —
+ *  what the server's git and history endpoints take as `session`. */
+export function focusedHostSession(s: State): string | undefined {
+  const id = focusedCwdSession(s);
+  return id && (remoteSessionFor(s, id) ?? id);
+}
+
 /** Find a leaf by id anywhere — anchors can point across pages and workspaces. */
 function findLeafGlobal(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
   const conversation = s.agentConversations.find((item) => item.id === leafId);
@@ -2575,20 +2581,38 @@ export function cwdCandidates(s: State, leafId: string): string[] {
 }
 
 /**
- * The SSH terminal session whose host a file tree on `leafId` browses, or
- * undefined for the local disk. A pane with its own SSH connection browses
- * that host; a shell-less pane follows its anchor chain (see cwdCandidates)
- * and stops at the first pane that has a shell of its own.
+ * The SSH terminal session whose host a directory view (files, git, history)
+ * on `leafId` reads, or undefined for this machine. A pane with its own SSH
+ * connection reads that host; a shell-less pane follows its anchor chain (see
+ * cwdCandidates) and stops at the first pane that has a shell of its own.
  */
-export function remoteFilesSession(s: State, leafId: string): string | undefined {
+export function remoteSessionFor(s: State, leafId: string): string | undefined {
+  const leaf = remoteLeafFor(s, leafId);
+  return leaf?.sshTarget && terminalSessionId(leaf.id, leaf.sshTarget);
+}
+
+/** The SSH pane behind remoteSessionFor — for its target and label. */
+export function remoteLeafFor(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
   const [self, ...anchors] = cwdCandidates(s, leafId).map((id) => findLeafGlobal(s, id));
-  if (self?.sshTarget) return terminalSessionId(self.id, self.sshTarget);
+  if (self?.sshTarget) return self;
+  // A local terminal has a shell of its own — whatever pane it was opened
+  // from (maybe an SSH one, on another page) says nothing about its machine.
+  if (!self || (self.view ?? "terminal") === "terminal") return undefined;
   for (const leaf of anchors) {
     if (!leaf) return undefined;
-    if (leaf.sshTarget) return terminalSessionId(leaf.id, leaf.sshTarget);
+    if (leaf.sshTarget) return leaf;
     if ((leaf.view ?? "terminal") === "terminal") return undefined;
   }
   return undefined;
+}
+
+/** Views an SSH pane can show: the ones that read through its connection. */
+export const SSH_PANE_VIEWS: readonly PaneView[] = ["terminal", "files", "git", "history"];
+
+function sshPaneVisibility(visibility: RailVisibility): RailVisibility {
+  return Object.fromEntries(
+    Object.entries(visibility).map(([id, shown]) => [id, shown && SSH_PANE_VIEWS.includes(id as PaneView)]),
+  ) as RailVisibility;
 }
 
 export function activeHtab(s: State): HTab | undefined {
