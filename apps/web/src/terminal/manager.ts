@@ -1351,6 +1351,17 @@ export function applyFontSize(size: number) {
 }
 
 /**
+ * Turn off modes a dead shell's programs may have left on: scroll margins,
+ * mouse/focus reporting, bracketed paste, origin mode, application cursor
+ * keys/keypad, hidden cursor, line-drawing charset, SGR attributes. Without
+ * this, e.g. a tmux killed by a dropped SSH link leaves `?1003` on, and every
+ * mouse move types `35;65;47M…` into the next shell.
+ */
+const STALE_MODE_RESET =
+  "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
+  "\x1b[?1l\x1b>\x1b[?25h\x1b(B\x0f\x1b[0m";
+
+/**
  * Release a terminal mouse drag whose mouseup never arrived.
  *
  * xterm's SelectionService (and its mouse-tracking drag reporting) attach
@@ -1476,8 +1487,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       const finishReset = () => {
         const row = term.buffer.active.cursorY + 1; // where the replay ended
         term.write(
-          "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
-            "\x1b[?25h\x1b(B\x0f\x1b[0m" +
+          STALE_MODE_RESET +
             `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
             "\r\n", // no divider — history flows straight into the new shell
           () => {
@@ -1631,7 +1641,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         return;
       }
       session.restartAttempts++;
-      term.write(`\r\n\x1b[2m[session ended — starting a new shell]\x1b[0m\r\n`);
+      // `?1047l` leaves a stale alternate screen without `?1049l`'s cursor
+      // restore, and is a no-op on the normal screen.
+      term.write(`\x1b[?1047l${STALE_MODE_RESET}\r\n\x1b[2m[session ended — starting a new shell]\x1b[0m\r\n`);
       const next = spawnBackend();
       session.backend = next;
       session.spawnedAt = Date.now();
@@ -1645,6 +1657,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     session.ended = false;
     session.connectionState = "connecting";
     notifyConnectionStatus();
+    term.write(`\x1b[?1047l${STALE_MODE_RESET}`); // see the auto-restart above
     const next = spawnBackend();
     session.backend = next;
     session.spawnedAt = Date.now();
