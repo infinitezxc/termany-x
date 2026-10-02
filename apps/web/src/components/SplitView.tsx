@@ -264,7 +264,7 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
   const current = leaf.view ?? "terminal";
   const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
   const availableViews = leaf.sshTarget
-    ? PANE_VIEWS.filter((entry) => entry.view === "terminal")
+    ? PANE_VIEWS.filter((entry) => entry.view === "terminal" || (entry.view === "files" && railVisibility.files))
     : PANE_VIEWS.filter((entry) => railVisibility[entry.view]);
   return (
     <div className="pane-view-menu" ref={rootRef}>

@@ -82,9 +82,14 @@ export function sshArgsForConnection(value: string): string[] {
  * control and probe commands reuse those and must not inherit a remote command.
  */
 export function sshInteractiveArgsForConnection(value: string, args: string[]): string[] {
-  if (!value.startsWith("profile:")) return args;
-  const remoteDir = listSshProfiles().find((item) => item.id === value.slice(8))?.remoteDir;
+  const remoteDir = remoteDirForConnection(value);
   return remoteDir ? ["-t", ...args, sshRemoteDirCommand(remoteDir)] : args;
+}
+
+/** The profile's configured remote directory, if the connection is a profile with one. */
+export function remoteDirForConnection(value: string): string | undefined {
+  if (!value.startsWith("profile:")) return undefined;
+  return listSshProfiles().find((item) => item.id === value.slice(8))?.remoteDir;
 }
 
 /**
@@ -101,7 +106,7 @@ export function sshRemoteDirCommand(dir: string): string {
   return `exec sh -c ${shellQuote(script)} termany ${shellQuote(dir)}`;
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

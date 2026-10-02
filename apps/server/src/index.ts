@@ -7,7 +7,7 @@ setGlobalDispatcher(new EnvHttpProxyAgent());
 import { spawn } from "node-pty";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -30,7 +30,8 @@ import {
 } from "./acpRuntime.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
-import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
+import { listSshConnections, listSshProfiles, remoteDirForConnection, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
+import { remoteList, remoteListSession, remoteRead, remoteStream, remoteWrite } from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -409,6 +410,23 @@ const activityInstance = `${process.pid}-${Date.now().toString(36)}`;
 let activityRevision = 0;
 const activityTracker = new AgentActivityTracker({ onChange: activityChanged });
 const sshPortForwarding = new SshPortForwarding();
+
+/**
+ * The file tree names the terminal it browses for; an SSH pane's session id
+ * (`<pane>:ssh:<target>`, see the frontend's terminalSessionId) makes every
+ * /api/fs call run on that host instead. A dead SSH session must fail rather
+ * than quietly fall back to the local disk, where the same path means
+ * something else entirely.
+ */
+function remoteFsFor(sessionId: string | null): { args: string[]; target: string } | null {
+  if (!sessionId?.includes(":ssh:")) return null;
+  const session = ptySessions.get(sessionId);
+  if (!session?.sshTarget) throw new Error("SSH session is not connected");
+  // No master connection to multiplex over (Windows has no ControlMaster).
+  const args = sshPortForwarding.execArgs(sessionId);
+  if (!args) throw new Error("Remote files are not available for this SSH connection");
+  return { args, target: session.sshTarget };
+}
 
 function activityPayload() {
   return {
@@ -1245,6 +1263,16 @@ const http = createServer((req, res) => {
       const sessionId = reqUrl.searchParams.get("session") ?? "";
       const requested = reqUrl.searchParams.get("path");
       let dir = requested?.trim();
+      const remote = remoteFsFor(sessionId);
+      if (remote) {
+        json(
+          200,
+          dir
+            ? await remoteList(remote.args, dir)
+            : await remoteListSession(remote.args, remoteDirForConnection(remote.target) ?? ""),
+        );
+        return;
+      }
       // Expand a leading "~" (bare, or "~/…") — typed manually into the file
       // tree's address bar, this is the one place a user-facing path needs it.
       if (dir === "~") dir = os.homedir();
@@ -1312,6 +1340,11 @@ const http = createServer((req, res) => {
     (async () => {
       const requested = reqUrl.searchParams.get("path");
       if (!requested) throw new Error("path is required");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      if (remote) {
+        await serveRemoteMedia(req, res, remote.args, requested);
+        return;
+      }
       const abs = path.resolve(requested);
       const contentType = mediaTypeForPath(abs);
       if (!contentType) throw new Error("unsupported media type");
@@ -1361,6 +1394,13 @@ const http = createServer((req, res) => {
     (async () => {
       const requested = reqUrl.searchParams.get("path");
       if (!requested) throw new Error("path is required");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      if (remote) {
+        const { size, content } = await remoteRead(remote.args, requested, FILE_READ_CAP);
+        if (content.includes(0)) json(200, { binary: true, size });
+        else json(200, { content: content.toString("utf8"), truncated: size > FILE_READ_CAP, size });
+        return;
+      }
       const abs = path.resolve(requested);
       const stat = await fs.promises.stat(abs);
       if (!stat.isFile()) throw new Error("not a file");
@@ -1390,7 +1430,9 @@ const http = createServer((req, res) => {
         const requested = String(body?.path ?? "");
         if (!requested) throw new Error("path is required");
         const content = String(body?.content ?? "");
-        await fs.promises.writeFile(path.resolve(requested), content, "utf8");
+        const remote = remoteFsFor(body?.session ? String(body.session) : null);
+        if (remote) await remoteWrite(remote.args, requested, content);
+        else await fs.promises.writeFile(path.resolve(requested), content, "utf8");
         json(200, { ok: true });
       })
       .catch(fail);
@@ -1797,6 +1839,43 @@ async function paneCwd(shellPid: number): Promise<string | undefined> {
 }
 
 /** Return `dir` if it's an existing directory, else undefined. */
+/** /api/fs/media for an SSH pane: the same Range handling, streamed over ssh. */
+async function serveRemoteMedia(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sshArgs: string[],
+  file: string,
+): Promise<void> {
+  const contentType = mediaTypeForPath(file);
+  if (!contentType) throw new Error("unsupported media type");
+  const match = req.headers.range ? /^bytes=(\d*)-(\d*)$/.exec(req.headers.range) : null;
+  if (req.headers.range && !match) {
+    res.writeHead(416);
+    res.end();
+    return;
+  }
+  // The file size only arrives with the stream itself, so a suffix range
+  // (`bytes=-500`) is served whole rather than costing a second round trip.
+  const start = match?.[1] ? Number(match[1]) : 0;
+  const end = match?.[1] && match[2] ? Number(match[2]) : undefined;
+  const stream = await remoteStream(sshArgs, file, start, end === undefined ? undefined : end - start + 1);
+  const last = Math.min(end ?? stream.size - 1, stream.size - 1);
+  if (match?.[1] && (start > last || start >= stream.size)) {
+    stream.kill();
+    res.writeHead(416, { "Content-Range": `bytes */${stream.size}` });
+    res.end();
+    return;
+  }
+  res.on("close", stream.kill);
+  res.writeHead(match?.[1] ? 206 : 200, {
+    "Content-Type": contentType,
+    "Content-Length": last - start + 1,
+    ...(match?.[1] ? { "Content-Range": `bytes ${start}-${last}/${stream.size}` } : {}),
+    "Accept-Ranges": "bytes",
+  });
+  stream.body.pipe(res);
+}
+
 async function dirIfValid(dir: string | undefined): Promise<string | undefined> {
   if (!dir) return undefined;
   try {

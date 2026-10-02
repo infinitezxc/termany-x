@@ -5,7 +5,7 @@ import {
   loadKeybindings,
   saveKeybindings,
 } from "../keybindings";
-import { disposePaneSessions } from "../terminal/manager";
+import { disposePaneSessions, terminalSessionId } from "../terminal/manager";
 import { applyTheme, loadThemeId, THEMES } from "../themes";
 import {
   loadRailVisibility,
@@ -2126,7 +2126,11 @@ export const useStore = create<State>((set, get) => ({
             const flip = (p: Pane): Pane => {
               if (p.kind === "split") return { ...p, children: p.children.map(flip) };
               if (p.id !== leafId) return p;
-              if (p.sshTarget) return { ...p, view: "terminal" };
+              // SSH panes only have the two views that can reach the remote
+              // host: its shell and its file tree.
+              if (p.sshTarget) {
+                return { ...p, view: p.view !== "files" && s.railVisibility.files ? "files" : "terminal" };
+              }
               const next = nextCyclablePaneView(p.view, s.railVisibility);
               return next ? { ...p, view: next } : p;
             };
@@ -2147,7 +2151,7 @@ export const useStore = create<State>((set, get) => ({
             const setView = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view: p.sshTarget ? "terminal" : view }
+                  ? { ...p, view: p.sshTarget && view !== "files" ? "terminal" : view }
                   : p
                 : { ...p, children: p.children.map(setView) };
             return { ...h, layout: setView(h.layout) };
@@ -2568,6 +2572,23 @@ export function cwdCandidates(s: State, leafId: string): string[] {
     cur = findLeafGlobal(s, cur)?.cwdFrom;
   }
   return out;
+}
+
+/**
+ * The SSH terminal session whose host a file tree on `leafId` browses, or
+ * undefined for the local disk. A pane with its own SSH connection browses
+ * that host; a shell-less pane follows its anchor chain (see cwdCandidates)
+ * and stops at the first pane that has a shell of its own.
+ */
+export function remoteFilesSession(s: State, leafId: string): string | undefined {
+  const [self, ...anchors] = cwdCandidates(s, leafId).map((id) => findLeafGlobal(s, id));
+  if (self?.sshTarget) return terminalSessionId(self.id, self.sshTarget);
+  for (const leaf of anchors) {
+    if (!leaf) return undefined;
+    if (leaf.sshTarget) return terminalSessionId(leaf.id, leaf.sshTarget);
+    if ((leaf.view ?? "terminal") === "terminal") return undefined;
+  }
+  return undefined;
 }
 
 export function activeHtab(s: State): HTab | undefined {
