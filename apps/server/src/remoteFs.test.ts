@@ -225,3 +225,76 @@ test(
     assert.deepEqual(codex.sessions?.map((s) => [s.sessionId, s.preview]), [["abc", "fix the login bug"]]);
   }),
 );
+
+test(
+  "remote codex history with large transcript heads is fetched in bounded round trips",
+  withFakeSsh(async (root) => {
+    const project = path.join(root, "proj");
+    mkdirSync(project);
+    const day = path.join(root, ".codex", "sessions", "2026", "10", "03");
+    mkdirSync(day, { recursive: true });
+    // Recent codex writes ~150 KB of instructions up front; 80 such heads in a
+    // scoped (100-file) batch exceed remoteSh's 16 MB output cap.
+    const instructions = "x".repeat(240 * 1024);
+    for (let i = 0; i < 80; i++) {
+      const id = `s${String(i).padStart(2, "0")}`;
+      writeFileSync(
+        path.join(day, `rollout-2026-10-03T00-00-${id}.jsonl`),
+        [
+          JSON.stringify({ type: "session_meta", payload: { id, cwd: project, base_instructions: instructions } }),
+          JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: `task ${id}` } }),
+        ].join("\n") + "\n",
+      );
+    }
+    const exec = (script: string, args: string[]) => remoteSh([], script, args);
+    const page = await listRemoteAgentSessions(exec, "host-big", "codex", [project], 0, 100);
+    assert.equal(page.sessions?.length, 80);
+    assert.equal(page.nextCursor, null);
+  }),
+);
+
+test(
+  "remote heads cut long strings without breaking escapes or characters",
+  withFakeSsh(async (root) => {
+    const project = path.join(root, "proj");
+    mkdirSync(project);
+    const day = path.join(root, ".codex", "sessions", "2026", "10", "04");
+    mkdirSync(day, { recursive: true });
+    // Raw JSON string bodies whose 1024-byte cut lands inside each kind of escape.
+    const escapes = ["\\u00e9", "\\\\", '\\"', "\\n", "\\\\\\u00e9"];
+    const expected: string[][] = [];
+    let n = 0;
+    for (const esc of escapes) {
+      for (let pad = 1016; pad <= 1024; pad++) {
+        const id = `e${n++}`;
+        const body = "a".repeat(pad) + esc + esc + "tail";
+        const cjk = "汉".repeat(400);
+        writeFileSync(
+          path.join(day, `rollout-2026-10-04T00-00-${id}.jsonl`),
+          [
+            `{"type":"session_meta","payload":{"id":"${id}","cwd":${JSON.stringify(project)},"base_instructions":{"text":"${body}"},"git":{"branch":"b"}}}`,
+            JSON.stringify({ type: "response_item", payload: { type: "function_call", arguments: "x".repeat(5000) } }),
+            `{"type":"event_msg","payload":{"type":"user_message","message":"${body}"}}`,
+            JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: cjk } }),
+          ].join("\n") + "\n",
+        );
+        expected.push([id, "b"]);
+      }
+    }
+    const exec = (script: string, args: string[]) => remoteSh([], script, args);
+    const page = await listRemoteAgentSessions(exec, "host-esc", "codex", [], 0, 100);
+    assert.deepEqual(page.sessions?.map((s) => [s.sessionId, s.gitBranch]).sort(), expected.sort());
+    for (const s of page.sessions ?? []) assert.match(s.preview, /^a{160}$/);
+
+    // A multi-byte character cut at the boundary is dropped, not shown as U+FFFD.
+    writeFileSync(
+      path.join(day, "rollout-2026-10-04T00-01-cjk.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "cjk", cwd: project } }),
+        JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: " ".repeat(700) + "汉".repeat(400) } }),
+      ].join("\n") + "\n",
+    );
+    const cjk = (await listRemoteAgentSessions(exec, "host-esc", "codex", [], 0, 100)).sessions?.find((s) => s.sessionId === "cjk");
+    assert.ok(cjk && cjk.preview.length > 0 && !cjk.preview.includes("�"), cjk?.preview);
+  }),
+);

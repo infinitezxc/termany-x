@@ -104,7 +104,8 @@ function addUsage(
 }
 
 function cleanPreview(s: string): string {
-  return s.replace(/\s+/g, " ").trim().slice(0, PREVIEW_CHARS);
+  // Remote heads cut long strings mid-character; that tail decodes as U+FFFD.
+  return s.replace(/\uFFFD+$/, "").replace(/\s+/g, " ").trim().slice(0, PREVIEW_CHARS);
 }
 
 /** Lines of a local transcript; breaking out of the loop closes the file. */
@@ -637,6 +638,20 @@ export async function listAgentSessions(
 /** Runs a fixed `sh` script on the remote host with $1… = args (see remoteSh). */
 export type RemoteExec = (script: string, args: string[]) => Promise<Buffer>;
 
+/** Head bytes read per file on the remote host (only remote CPU; never sent as-is). */
+const REMOTE_HEAD_INPUT_BYTES = 4 * 1024 * 1024;
+/** String literals are cut to this — past PREVIEW_CHARS even for 3-byte CJK text. */
+const REMOTE_STRING_BYTES = 1024;
+/** Upper bound on one file's shrunk head. */
+const REMOTE_HEAD_OUTPUT_BYTES = 32 * 1024;
+/** Per round trip: worst-case output, well under remoteSh's 16 MB cap, and the
+ *  length of the file arguments — sshd hands the whole command to the login
+ *  shell as one argument, which Linux caps at 128 KB. */
+const REMOTE_HEADS_OUTPUT_BUDGET = 8 * 1024 * 1024;
+const REMOTE_HEADS_ARGS_BUDGET = 64 * 1024;
+/** Heads read per batch while filling a scoped page. */
+const REMOTE_SCOPED_BATCH = 500;
+
 const REMOTE_SOURCES: Record<
   string,
   {
@@ -644,6 +659,8 @@ const REMOTE_SOURCES: Record<
     name: string;
     depth: number;
     accept: (file: string) => boolean;
+    /** Only head lines containing one of these are sent back — the ones the parser reads. */
+    keep: string[];
     parse: (lines: string[], abs: string, mtimeMs: number) => Promise<AgentSession | null>;
   }
 > = {
@@ -652,6 +669,8 @@ const REMOTE_SOURCES: Record<
     name: "*.jsonl",
     depth: 2,
     accept: (file) => /\/[0-9a-f][0-9a-f-]{34}[0-9a-f]\.jsonl$/.test(file),
+    // Most entry types carry cwd/gitBranch; a session may have no user line yet.
+    keep: ['"type":"user"', '"type":"summary"', '"worktreeSession"', '"cwd":"'],
     parse: parseClaudeHeadLines,
   },
   codex: {
@@ -659,6 +678,7 @@ const REMOTE_SOURCES: Record<
     name: "rollout-*.jsonl",
     depth: 6,
     accept: () => true,
+    keep: ['"type":"session_meta"', '"role":"user"', '"type":"user_message"'],
     parse: (lines, _abs, mtimeMs) => parseCodexHeadLines(lines, mtimeMs),
   },
 };
@@ -670,10 +690,62 @@ const REMOTE_FILES_SCRIPT =
   "find . -maxdepth \"$3\" -type f -name \"$2\" -exec stat -c '%s/%Y/%n' {} + 2>/dev/null; " +
   "else find . -maxdepth \"$3\" -type f -name \"$2\" -exec stat -f '%z/%m/%N' {} + 2>/dev/null; fi; exit 0";
 
-/** $1 = line count, then files. Each head is introduced by a RS (\036) line naming the file —
- *  raw control characters cannot occur inside JSONL, so the separator is unambiguous. */
+/**
+ * Rewrites JSONL head lines into small ones that still parse: keeps only lines
+ * containing a `keep` pattern (`|`-separated), cuts every string literal to
+ * `k` bytes without splitting an escape, and stops after `cap` bytes. Recent
+ * codex rollouts open with ~150 KB of instructions — this sends ~6 KB instead.
+ * Run with LC_ALL=C so lengths are bytes; a UTF-8 character cut at the end of a
+ * string decodes as U+FFFD, which cleanPreview drops. split() rather than a
+ * string-literal regex: gawk's match() backtracks for minutes on long literals.
+ */
+const REMOTE_SHRINK_AWK = `
+function escaped(s,   n, i) {
+  n = 0
+  for (i = length(s); i > 0 && substr(s, i, 1) == "\\\\"; i--) n++
+  return n % 2
+}
+function cut(s,   i, u) {
+  if (length(s) <= k) return s
+  s = substr(s, 1, k)
+  u = 0
+  for (i = length(s); i > 0 && u < 4 && substr(s, i, 1) ~ /[0-9A-Fa-f]/; i--) u++
+  if (i > 1 && u < 4 && substr(s, i, 1) == "u" && escaped(substr(s, 1, i - 1))) s = substr(s, 1, i - 2)
+  if (escaped(s)) s = substr(s, 1, length(s) - 1)
+  return s
+}
+function shrink(line,   p, n, i, out, lit) {
+  n = split(line, p, "\\"")
+  out = p[1]
+  for (i = 2; i <= n; ) {
+    lit = p[i]
+    while (escaped(p[i]) && i < n) {
+      i++
+      if (length(lit) <= k) lit = lit "\\"" p[i]
+    }
+    out = out "\\"" cut(lit) "\\""
+    i++
+    if (i <= n) out = out p[i++]
+  }
+  return out
+}
+BEGIN { nkeep = split(keep, pats, "|") }
+{
+  for (j = 1; j <= nkeep && !index($0, pats[j]); j++);
+  if (j > nkeep) next
+  line = shrink($0)
+  used += length(line) + 1
+  if (used > cap) exit
+  print line
+}`;
+
+/** $1 = line count, $2 = keep patterns, $3 = awk program, then files. Each head is introduced
+ *  by a RS (\036) line naming the file — raw control characters cannot occur inside JSONL,
+ *  so the separator is unambiguous. */
 const REMOTE_HEADS_SCRIPT =
-  'n=$1; shift; for f; do printf "\\036%s\\n" "$f"; head -n "$n" < "$f" 2>/dev/null | head -c 262144; echo; done';
+  'n=$1; keep=$2; prog=$3; shift 3; for f; do printf "\\036%s\\n" "$f"; ' +
+  `head -n "$n" < "$f" 2>/dev/null | head -c ${REMOTE_HEAD_INPUT_BYTES} | ` +
+  `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_STRING_BYTES} -v cap=${REMOTE_HEAD_OUTPUT_BYTES} "$prog"; done`;
 
 /** $@ = directories; prints 1 or 0 per directory, in order. */
 const REMOTE_DIRS_SCRIPT = 'for d; do if [ -d "$d" ]; then echo 1; else echo 0; fi; done';
@@ -701,13 +773,27 @@ async function listRemoteFiles(exec: RemoteExec, agent: string): Promise<RemoteF
   return files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.abs.localeCompare(b.abs));
 }
 
-/** Head lines for each file, keyed by path. */
-async function remoteHeads(exec: RemoteExec, files: RemoteFile[]): Promise<Map<string, string[]>> {
-  const out = (await exec(REMOTE_HEADS_SCRIPT, [String(HEAD_LINES), ...files.map((f) => f.abs)])).toString("utf8");
+/** Shrunk head lines for each file, keyed by path — split into round trips that stay within budget. */
+async function remoteHeads(exec: RemoteExec, keep: string[], files: RemoteFile[]): Promise<Map<string, string[]>> {
   const heads = new Map<string, string[]>();
-  for (const chunk of out.split("\x1e").slice(1)) {
-    const [file, ...lines] = chunk.split("\n");
-    heads.set(file, lines);
+  for (let i = 0; i < files.length; ) {
+    const chunkFiles: RemoteFile[] = [];
+    let output = REMOTE_HEADS_OUTPUT_BUDGET;
+    let args = REMOTE_HEADS_ARGS_BUDGET;
+    for (; i < files.length; i++) {
+      const outCost = Math.min(files[i].size, REMOTE_HEAD_OUTPUT_BYTES) + files[i].abs.length + 2;
+      const argCost = files[i].abs.length + 3;
+      if (chunkFiles.length && (outCost > output || argCost > args)) break;
+      chunkFiles.push(files[i]);
+      output -= outCost;
+      args -= argCost;
+    }
+    const argv = [String(HEAD_LINES), keep.join("|"), REMOTE_SHRINK_AWK, ...chunkFiles.map((f) => f.abs)];
+    const out = (await exec(REMOTE_HEADS_SCRIPT, argv)).toString("utf8");
+    for (const chunk of out.split("\x1e").slice(1)) {
+      const [file, ...lines] = chunk.split("\n");
+      heads.set(file, lines);
+    }
   }
   return heads;
 }
@@ -731,8 +817,9 @@ export async function listRemoteAgentSessions(
   const safeLimit = Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : DEFAULT_SESSION_PAGE_SIZE;
   const limit = Math.max(1, Math.min(MAX_SESSION_PAGE_SIZE, safeLimit));
   // Every batch is a round trip; a scoped list skips most files, so it reads
-  // more heads per trip to fill a page.
-  const batchSize = roots.length ? MAX_SESSION_PAGE_SIZE : limit;
+  // more heads per trip to fill a page (shrunk heads are a few KB each;
+  // remoteHeads still splits a batch that would exceed its budgets).
+  const batchSize = roots.length ? REMOTE_SCOPED_BATCH : limit;
   const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
   const sessions: AgentSession[] = [];
   const ids = new Set<string>();
@@ -743,7 +830,7 @@ export async function listRemoteAgentSessions(
       const hit = sessionCache.get(cacheKey(f.abs));
       return !(hit && hit.mtimeMs === f.mtimeMs && hit.size === f.size);
     });
-    const heads = missing.length ? await remoteHeads(exec, missing) : new Map<string, string[]>();
+    const heads = missing.length ? await remoteHeads(exec, source.keep, missing) : new Map<string, string[]>();
     for (const file of batch) {
       index++;
       const key = cacheKey(file.abs);
