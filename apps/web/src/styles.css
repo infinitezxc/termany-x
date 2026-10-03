@@ -6517,6 +6517,88 @@ html.tauri #root {
   flex-direction: column;
   overflow: hidden;
 }
+/* Every open tab keeps its panel mounted; only the active one shows. */
+.file-preview-panel[hidden] {
+  display: none;
+}
+/* Narrow pane, tree column chosen: the tree takes the whole pane. */
+.file-tree-split.tree-only .file-tree {
+  flex: 1;
+  max-width: none;
+}
+.file-preview-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.file-preview-tabs::-webkit-scrollbar {
+  display: none;
+}
+.file-preview-tab {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 200px;
+  padding: 2px 2px 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: Menlo, monospace;
+  color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-preview-tab:hover {
+  background: var(--bg-3);
+}
+.file-preview-tab.active {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.file-preview-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-preview-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.file-preview-tab-close svg {
+  width: 11px;
+  height: 11px;
+}
+.file-preview-tab-close:hover {
+  background: var(--bg);
+}
+.file-preview-tab-close .file-preview-dirty {
+  margin: 0;
+}
+/* Close shows on the active or hovered tab; a dirty tab shows its dot until
+   hovered, then the close button in its place. */
+.file-preview-tab:not(.dirty) .file-preview-tab-close .file-preview-dirty,
+.file-preview-tab.dirty:hover .file-preview-tab-close .file-preview-dirty,
+.file-preview-tab.dirty:not(:hover) .file-preview-tab-close svg,
+.file-preview-tab:not(.active):not(.dirty):not(:hover) .file-preview-tab-close svg {
+  display: none;
+}
+.file-preview-tab.confirming .file-preview-tab-close,
+.file-tree-head .pane-btn.danger {
+  color: #e5484d;
+}
 .file-tree-head {
   display: flex;
   align-items: center;

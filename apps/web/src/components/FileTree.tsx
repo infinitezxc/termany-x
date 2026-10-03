@@ -678,30 +678,124 @@ interface Selected {
   error?: string;
 }
 
+/** The open files, as tabs across the top of the preview. A tab with unsaved
+ *  edits shows a dot in place of its close button (until hovered), and asks
+ *  for a second click before it lets those edits go. */
+function FileTabStrip({
+  tabs,
+  activePath,
+  dirtyPaths,
+  onActivate,
+  onClose,
+}: {
+  tabs: Selected[];
+  activePath: string;
+  dirtyPaths: Set<string>;
+  onActivate: (path: string) => void;
+  onClose: (path: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [confirmPath, setConfirmPath] = useState<string | null>(null);
+  useEffect(() => {
+    ref.current?.querySelector(".file-preview-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activePath, tabs.length]);
+
+  const close = (path: string) => {
+    if (dirtyPaths.has(path) && confirmPath !== path) {
+      setConfirmPath(path);
+      return;
+    }
+    setConfirmPath(null);
+    onClose(path);
+  };
+
+  return (
+    <div
+      className="file-preview-tabs"
+      ref={ref}
+      role="tablist"
+      onWheel={(e) => {
+        // A plain mouse wheel only scrolls vertically; turn it sideways here.
+        if (e.deltaY && !e.deltaX) e.currentTarget.scrollLeft += e.deltaY;
+      }}
+    >
+      {tabs.map((tab) => {
+        const dirty = dirtyPaths.has(tab.path);
+        const confirming = confirmPath === tab.path && dirty;
+        return (
+          <div
+            key={tab.path}
+            role="tab"
+            aria-selected={tab.path === activePath}
+            className={`file-preview-tab ${tab.path === activePath ? "active" : ""} ${dirty ? "dirty" : ""} ${confirming ? "confirming" : ""}`}
+            title={tab.path}
+            onClick={() => onActivate(tab.path)}
+            onAuxClick={(e) => {
+              if (e.button === 1) close(tab.path);
+            }}
+            onMouseLeave={() => confirming && setConfirmPath(null)}
+          >
+            <span className="file-preview-tab-name">{basename(tab.path)}</span>
+            <button
+              className="file-preview-tab-close"
+              title={confirming ? "Unsaved changes — click again to discard them" : "Close"}
+              onClick={(e) => {
+                e.stopPropagation();
+                close(tab.path);
+              }}
+            >
+              <span className="file-preview-dirty" />
+              <CloseIcon />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
- * The right-hand preview/editor panel — only ever mounted while a file is
- * selected, so there's no "nothing selected" state to render here. Keyed on
- * `selected.path` by the caller, so switching files always gets a fresh
- * instance (and with it, a fresh CodeEditor + reset save/dirty state) rather
- * than reusing stale state.
+ * The right-hand preview/editor panel for ONE open file. Every open tab keeps
+ * its own instance mounted (only the active one shown), so switching tabs
+ * doesn't throw away an editor's unsaved edits, scroll, or undo history.
+ * Keyed on the file's path by the caller, so a renamed file gets a fresh
+ * instance rather than stale state.
  */
 function FilePreview({
   selected,
+  visible,
+  tabStrip,
   remote,
   dark,
   treeCollapsed,
   onToggleTree,
+  onDirtyChange,
   onClose,
+  closeArmed,
 }: {
   selected: Selected;
+  /** The active tab, and the preview column is showing. */
+  visible: boolean;
+  /** Shared tab strip, in the header where the file name would go. */
+  tabStrip: React.ReactNode;
   /** SSH session the file lives on — no Finder to reveal it in. */
   remote?: string;
   dark: boolean;
   treeCollapsed: boolean;
   onToggleTree: () => void;
+  onDirtyChange: (path: string, dirty: boolean) => void;
+  /** Close every tab. Armed = asked once already, because some have unsaved edits. */
   onClose: () => void;
+  closeArmed: boolean;
 }) {
-  const [dirty, setDirty] = useState(false);
+  // Unsaved-edit state lives with the tab strip, which marks the tab.
+  const setDirty = useCallback((value: boolean) => onDirtyChange(selected.path, value), [onDirtyChange, selected.path]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // A hidden tab stays mounted — don't let its video or audio keep playing.
+  useEffect(() => {
+    if (visible) return;
+    panelRef.current?.querySelectorAll("video, audio").forEach((m) => (m as HTMLMediaElement).pause());
+  }, [visible]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
@@ -728,17 +822,14 @@ function FilePreview({
         setDirty(false);
       })
       .catch((e) => setSaveError(e instanceof Error ? e.message : String(e)));
-  }, [remote]);
+  }, [remote, setDirty]);
 
   const header = (
     <div className="file-tree-head">
       <button className="pane-btn" title={treeCollapsed ? "Show file tree" : "Collapse file tree"} onClick={onToggleTree}>
         <PanelLeftCloseIcon />
       </button>
-      <span className="file-tree-path" title={selected.path}>
-        {dirty && <span className="file-preview-dirty" title="Unsaved changes" />}
-        {basename(selected.path)}
-      </span>
+      {tabStrip}
       {selected.status === "text" && !selected.truncated && hasRenderedView(selected.path) && (
         <button
           className="pane-btn"
@@ -753,7 +844,11 @@ function FilePreview({
           <RevealFolderIcon />
         </button>
       )}
-      <button className="pane-btn" title="Close preview" onClick={onClose}>
+      <button
+        className={`pane-btn ${closeArmed ? "danger" : ""}`}
+        title={closeArmed ? "Some files have unsaved changes — click again to discard them" : "Close all files"}
+        onClick={onClose}
+      >
         <CloseIcon />
       </button>
     </div>
@@ -761,7 +856,7 @@ function FilePreview({
 
   if (selected.status === "loading") {
     return (
-      <div className="file-preview-panel">
+      <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
         {header}
       </div>
     );
@@ -772,7 +867,7 @@ function FilePreview({
     const mediaSrc = fsUrl("media", { path: selected.path }, remote);
     if (mediaKind) {
       return (
-        <div className="file-preview-panel">
+        <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
           {header}
           <div className={`file-media-preview ${mediaKind}`}>
             {mediaKind === "image" && <img src={mediaSrc} alt={basename(selected.path)} />}
@@ -788,7 +883,7 @@ function FilePreview({
       );
     }
     return (
-      <div className="file-preview-panel">
+      <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
         {header}
         <div className="file-unsupported-preview">
           <FileEntryIcon />
@@ -805,7 +900,7 @@ function FilePreview({
 
   if (selected.status === "error") {
     return (
-      <div className="file-preview-panel">
+      <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
         {header}
         <div className="file-tree-message">{selected.error}</div>
       </div>
@@ -828,7 +923,7 @@ function FilePreview({
               : null;
 
   return (
-    <div className="file-preview-panel">
+    <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
       {header}
       {selected.truncated && (
         <div className="file-tree-message">
@@ -874,13 +969,15 @@ interface FileTreeState {
   dirs: Record<string, DirState>;
   expanded: Set<string>;
   collapsedFrom: Set<string> | null;
-  selected: Selected | null;
+  /** Open files, in tab order. */
+  tabs: Selected[];
+  activePath: string | null;
   /** Last cwd resolved from the session — see `lastKnownCwd` below. */
   lastCwd: string | null;
 }
 
 function emptyFileTreeState(): FileTreeState {
-  return { root: null, rootError: null, dirs: {}, expanded: new Set(), collapsedFrom: null, selected: null, lastCwd: null };
+  return { root: null, rootError: null, dirs: {}, expanded: new Set(), collapsedFrom: null, tabs: [], activePath: null, lastCwd: null };
 }
 
 /**
@@ -960,12 +1057,29 @@ function FileTreeView({
   // Snapshot of what was open right before the last "collapse all" — lets
   // the same button restore it, instead of collapsing being a one-way trip.
   const [collapsedFrom, setCollapsedFrom] = useState(initial.collapsedFrom);
-  const [selected, setSelected] = useState(initial.selected);
+  const [tabs, setTabs] = useState(initial.tabs);
+  const [activePath, setActivePath] = useState(initial.activePath);
+  const selected = tabs.find((t) => t.path === activePath) ?? null;
+  // Tabs with unsaved edits — reported up by each tab's editor.
+  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
+  const markDirty = useCallback((path: string, dirty: boolean) => {
+    setDirtyPaths((prev) => {
+      if (prev.has(path) === dirty) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
+  const [closeAllArmed, setCloseAllArmed] = useState(false);
   // Default to the narrowest the resizer allows (its drag clamp, below) —
   // the preview is the point of the split; the tree only needs to stay
   // usable, and can always be dragged wider.
   const [treeWidth, setTreeWidth] = useState(180);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+  // Narrow panes show one column; this is whether it's the tree (with the
+  // files still open behind it) rather than the active file.
+  const [narrowTree, setNarrowTree] = useState(false);
   const splitRef = useRef<HTMLDivElement>(null);
 
   // Too narrow for two useful columns -> drop to one: the preview alone,
@@ -978,7 +1092,7 @@ function FileTreeView({
     const ro = new ResizeObserver(() => setNarrow(el.clientWidth < 600));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [selected !== null]);
+  }, [tabs.length > 0]);
 
   // The address bar's own draft text — separate from `root` so typing
   // doesn't take effect until Enter, and doesn't get clobbered by a
@@ -1028,7 +1142,6 @@ function FileTreeView({
         setDirs({ [body.path]: { status: "loaded", entries: body.entries } });
         setExpanded(new Set());
         setCollapsedFrom(null);
-        setSelected(null);
       })
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
   }, [remote]);
@@ -1039,19 +1152,29 @@ function FileTreeView({
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-        const nextSelected: Selected | null = selectedFile ? { path: selectedFile, status: "loading" } : null;
+        // Files already open stay open; the requested one joins them as a tab.
+        const cached = stateCache.get(cacheKey);
+        let nextTabs = cached?.tabs ?? [];
+        let nextActive = cached?.activePath ?? null;
+        if (selectedFile) {
+          if (!nextTabs.some((t) => t.path === selectedFile)) nextTabs = [...nextTabs, { path: selectedFile, status: "loading" }];
+          nextActive = selectedFile;
+        }
         setRoot(body.path);
         setDirs({ [body.path]: { status: "loaded", entries: body.entries } });
         setExpanded(new Set());
         setCollapsedFrom(null);
-        setSelected(nextSelected);
+        setTabs(nextTabs);
+        setActivePath(nextActive);
+        if (selectedFile) setNarrowTree(false);
         stateCache.set(cacheKey, {
           root: body.path,
           rootError: null,
           dirs: { [body.path]: { status: "loaded", entries: body.entries } },
           expanded: new Set(),
           collapsedFrom: null,
-          selected: nextSelected,
+          tabs: nextTabs,
+          activePath: nextActive,
           lastCwd: lastKnownCwd.current,
         });
       })
@@ -1079,7 +1202,6 @@ function FileTreeView({
           setDirs({ [body.path]: { status: "loaded", entries: body.entries } });
           setExpanded(new Set());
           setCollapsedFrom(null);
-          setSelected(null);
         }
       })
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
@@ -1089,7 +1211,7 @@ function FileTreeView({
   // NOT scoped to a dependency list, since ANY of the pieces changing should
   // update it (cheap: a Map.set of a plain object).
   useEffect(() => {
-    stateCache.set(cacheKey, { root, rootError, dirs, expanded, collapsedFrom, selected, lastCwd: lastKnownCwd.current });
+    stateCache.set(cacheKey, { root, rootError, dirs, expanded, collapsedFrom, tabs, activePath, lastCwd: lastKnownCwd.current });
   });
 
   // Only hydrate from a DIFFERENT session's cache when `sessionId` actually
@@ -1107,7 +1229,8 @@ function FileTreeView({
       setDirs(cached.dirs);
       setExpanded(cached.expanded);
       setCollapsedFrom(cached.collapsedFrom);
-      setSelected(cached.selected);
+      setTabs(cached.tabs);
+      setActivePath(cached.activePath);
       lastKnownCwd.current = cached.lastCwd;
     }
     lastSessionId.current = cacheKey;
@@ -1159,19 +1282,46 @@ function FileTreeView({
     };
   }, [sessionId, cacheKey, remote]);
 
-  // Click a file: open the preview beside the tree, in this pane. The cache
-  // write is synchronous so a remount from any concurrent layout change (a
-  // maximize toggle, a split) re-hydrates with the selection already made.
+  // Tab changes go through here so the cache write is synchronous: a remount
+  // from any concurrent layout change (a maximize toggle, a split)
+  // re-hydrates with the tabs already as they now are.
+  const commitTabs = (nextTabs: Selected[], nextActive: string | null) => {
+    stateCache.set(cacheKey, { ...(stateCache.get(cacheKey) ?? emptyFileTreeState()), tabs: nextTabs, activePath: nextActive });
+    setTabs(nextTabs);
+    setActivePath(nextActive);
+    setCloseAllArmed(false);
+    if (!nextTabs.length) setTreeCollapsed(false);
+  };
+
+  // Click a file: show it beside the tree, in this pane — switching to its tab
+  // if it's already open, else opening a new one right after the current.
   const selectFile = (path: string) => {
-    const next: Selected = { path, status: "loading" };
-    stateCache.set(cacheKey, { ...(stateCache.get(cacheKey) ?? emptyFileTreeState()), selected: next });
-    setSelected(next);
+    setNarrowTree(false);
+    if (tabs.some((t) => t.path === path)) {
+      commitTabs(tabs, path);
+      return;
+    }
+    const at = tabs.findIndex((t) => t.path === activePath) + 1 || tabs.length;
+    commitTabs([...tabs.slice(0, at), { path, status: "loading" }, ...tabs.slice(at)], path);
+  };
+
+  // Closing the active tab moves to its right-hand neighbour (else its left).
+  const closeTab = (path: string) => {
+    const i = tabs.findIndex((t) => t.path === path);
+    if (i < 0) return;
+    const nextTabs = tabs.filter((t) => t.path !== path);
+    const nextActive = path === activePath ? (nextTabs[i] ?? nextTabs[i - 1])?.path ?? null : activePath;
+    markDirty(path, false);
+    commitTabs(nextTabs, nextActive);
   };
 
   const closePreview = () => {
-    stateCache.set(cacheKey, { ...(stateCache.get(cacheKey) ?? emptyFileTreeState()), selected: null });
-    setSelected(null);
-    setTreeCollapsed(false);
+    if (dirtyPaths.size && !closeAllArmed) {
+      setCloseAllArmed(true);
+      return;
+    }
+    setDirtyPaths(new Set());
+    commitTabs([], null);
   };
 
   // Actually fetch the selected file's content. Runs in whichever FileTree
@@ -1180,29 +1330,37 @@ function FileTreeView({
   // earlier instance's in-flight request never gets to land (its result would
   // call a dead setSelected — harmless no-op, but also lost), this instance's
   // own effect independently redoes it and succeeds.
+  const loadingPaths = tabs.filter((t) => t.status === "loading").map((t) => t.path).join("\0");
   useEffect(() => {
-    if (selected?.status !== "loading") return;
-    const path = selected.path;
+    if (!loadingPaths) return;
     let live = true;
-    fetch(fsUrl("read", { path }, remote))
-      .then(async (res) => {
-        const body = await res.json();
-        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-        const result: Selected = body.binary
-          ? { path, status: "binary" }
-          : { path, status: "text", content: body.content, truncated: !!body.truncated };
-        if (!live) return;
-        stateCache.set(cacheKey, { ...(stateCache.get(cacheKey) ?? emptyFileTreeState()), selected: result });
-        setSelected(result);
-      })
-      .catch((e) => {
-        if (!live) return;
-        setSelected({ path, status: "error", error: e instanceof Error ? e.message : String(e) });
-      });
+    // Swap in a tab's result in place — only if that tab is still open, and
+    // still waiting (a close and reopen meanwhile starts its own fetch).
+    const land = (result: Selected) => {
+      if (!live) return;
+      const update = (list: Selected[]) =>
+        list.map((t) => (t.path === result.path && t.status === "loading" ? result : t));
+      const cached = stateCache.get(cacheKey) ?? emptyFileTreeState();
+      stateCache.set(cacheKey, { ...cached, tabs: update(cached.tabs) });
+      setTabs(update);
+    };
+    for (const path of loadingPaths.split("\0")) {
+      fetch(fsUrl("read", { path }, remote))
+        .then(async (res) => {
+          const body = await res.json();
+          if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+          land(
+            body.binary
+              ? { path, status: "binary" }
+              : { path, status: "text", content: body.content, truncated: !!body.truncated },
+          );
+        })
+        .catch((e) => land({ path, status: "error", error: e instanceof Error ? e.message : String(e) }));
+    }
     return () => {
       live = false;
     };
-  }, [selected?.path, selected?.status, cacheKey, remote]);
+  }, [loadingPaths, cacheKey, remote]);
 
   const toggleDir = (path: string) => {
     const opening = !expanded.has(path);
@@ -1242,9 +1400,20 @@ function FileTreeView({
     });
     setCollapsedFrom(null);
     setDirs((d) => Object.fromEntries(Object.entries(d).filter(([p]) => !isWithin(p, oldPath))));
-    if (selected && isWithin(selected.path, oldPath)) {
-      if (newPath) selectFile(move(selected.path)!);
-      else closePreview();
+    // Open files under it follow a rename (reloaded at their new path), or
+    // close with a delete.
+    if (tabs.some((t) => isWithin(t.path, oldPath))) {
+      const nextTabs = tabs.flatMap((t): Selected[] =>
+        !isWithin(t.path, oldPath) ? [t] : newPath ? [{ path: move(t.path)!, status: "loading" }] : [],
+      );
+      tabs.forEach((t) => isWithin(t.path, oldPath) && markDirty(t.path, false));
+      const nextActive =
+        activePath && isWithin(activePath, oldPath)
+          ? newPath
+            ? move(activePath)
+            : (nextTabs[Math.min(tabs.findIndex((t) => t.path === activePath), nextTabs.length - 1)]?.path ?? null)
+          : activePath;
+      commitTabs(nextTabs, nextActive);
     }
     if (newPath) expanded.forEach((p) => isWithin(p, oldPath) && loadDir(move(p)!));
   };
@@ -1367,6 +1536,11 @@ function FileTreeView({
         <button className="pane-btn" title="Refresh" onClick={refresh}>
           <RefreshIcon />
         </button>
+        {narrow && tabs.length > 0 && (
+          <button className="pane-btn" title="Back to open files" onClick={() => setNarrowTree(false)}>
+            <FileEntryIcon />
+          </button>
+        )}
       </div>
       <div
         className="file-tree-list"
@@ -1433,8 +1607,8 @@ function FileTreeView({
     </>
   );
 
-  // Nothing selected: just the tree, full width.
-  if (!selected) return <div className="file-tree">{treeUi}</div>;
+  // Nothing open: just the tree, full width.
+  if (!tabs.length) return <div className="file-tree">{treeUi}</div>;
 
   const startTreeResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1460,24 +1634,42 @@ function FileTreeView({
     window.addEventListener("pointercancel", onUp);
   };
 
+  // Narrow: one column, either the tree or the open files — the previews
+  // stay mounted behind the tree so their edits survive the trip.
+  const treeOnly = narrow && narrowTree;
   const collapsed = treeCollapsed || narrow;
+  const tabStrip = (
+    <FileTabStrip
+      tabs={tabs}
+      activePath={activePath ?? ""}
+      dirtyPaths={dirtyPaths}
+      onActivate={(path) => commitTabs(tabs, path)}
+      onClose={closeTab}
+    />
+  );
   return (
-    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""}`} ref={splitRef}>
-      {!collapsed && (
+    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""} ${treeOnly ? "tree-only" : ""}`} ref={splitRef}>
+      {(treeOnly || !collapsed) && (
         <>
-          <div className="file-tree" style={{ flexBasis: treeWidth }}>{treeUi}</div>
-          <div className="file-tree-resizer" onPointerDown={startTreeResize} />
+          <div className="file-tree" style={treeOnly ? undefined : { flexBasis: treeWidth }}>{treeUi}</div>
+          {!treeOnly && <div className="file-tree-resizer" onPointerDown={startTreeResize} />}
         </>
       )}
-      <FilePreview
-        key={selected.path}
-        selected={selected}
-        remote={remote}
-        dark={dark}
-        treeCollapsed={collapsed}
-        onToggleTree={() => (narrow ? closePreview() : setTreeCollapsed((v) => !v))}
-        onClose={closePreview}
-      />
+      {tabs.map((tab) => (
+        <FilePreview
+          key={tab.path}
+          selected={tab}
+          visible={tab.path === selected?.path && !treeOnly}
+          tabStrip={tabStrip}
+          remote={remote}
+          dark={dark}
+          treeCollapsed={collapsed}
+          onToggleTree={() => (narrow ? setNarrowTree(true) : setTreeCollapsed((v) => !v))}
+          onDirtyChange={markDirty}
+          onClose={closePreview}
+          closeArmed={closeAllArmed}
+        />
+      ))}
     </div>
   );
 }
