@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
+import { remoteShCommand } from "./remoteCommand.js";
 
 const execFileAsync = promisify(execFile);
 const PROBE_TTL_MS = 3_000;
@@ -241,7 +242,9 @@ export class SshPortForwarding {
   }
 
   private async runProbe(session: SshPortSession): Promise<number[]> {
-    const args = [...sshExecArgs(session), REMOTE_LISTEN_COMMAND];
+    // Probes repeat every few seconds; a slow one must not outlive its timeout
+    // on the host and hold one of the connection's sessions (see remoteDeadline).
+    const args = [...sshExecArgs(session), remoteShCommand(REMOTE_LISTEN_COMMAND, [], SSH_TIMEOUT_MS)];
     const { stdout } = await execFileAsync("ssh", args, {
       timeout: SSH_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,

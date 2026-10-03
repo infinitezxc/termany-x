@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawn as spawnPty } from "node-pty";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { listRemoteAgentSessions } from "./agentSessions.js";
 import { gitDiffs, gitOverview, withGitHost } from "./git.js";
 import {
@@ -20,6 +20,7 @@ import {
   remoteStream,
   remoteWrite,
 } from "./remoteFs.js";
+import { remoteShCommand } from "./remoteCommand.js";
 
 /** A stand-in `ssh` on PATH that runs the remote command line with /bin/sh. */
 function withFakeSsh(fn: (root: string) => Promise<void>): () => Promise<void> {
@@ -48,6 +49,29 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
   for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
   return Buffer.concat(chunks).toString("utf8");
 }
+
+/** Run a remote command line the way sshd does: in its own session. */
+function runDetached(command: string): Promise<{ stdout: string; code: number | null; signal: string | null; ms: number }> {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn("/bin/sh", ["-c", command], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
+    child.on("close", (code, signal) => resolve({ stdout, code, signal, ms: Date.now() - started }));
+  });
+}
+
+test("remote commands end on the host at their deadline", async () => {
+  // A command whose local ssh client was killed must not hold an sshd session.
+  const stuck = await runDetached(remoteShCommand("sleep 30", [], 1000));
+  assert.equal(stuck.signal, "SIGKILL");
+  assert.ok(stuck.ms < 5000, `took ${stuck.ms} ms`);
+  // A quick one keeps its output and status, and the watchdog doesn't hold it open.
+  const quick = await runDetached(remoteShCommand('echo "[$1]"; exit 3', ["a b"], 15_000));
+  assert.deepEqual([quick.stdout, quick.code], ["[a b]\n", 3]);
+  assert.ok(quick.ms < 900, `took ${quick.ms} ms`);
+  assert.ok(!remoteShCommand("true", [], 1000).includes("!"), "csh would history-expand !");
+});
 
 test("parses GNU and BSD stat listings", () => {
   const listing = parseRemoteListing(

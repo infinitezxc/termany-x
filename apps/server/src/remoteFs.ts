@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import type { GitHost } from "./git.js";
-import { shellQuote } from "./ssh.js";
+import { remoteShCommand, shellQuote } from "./remoteCommand.js";
 
 // File-tree access for SSH panes. Every operation is one short POSIX `sh`
 // script run over the pane's existing OpenSSH master connection (see
@@ -107,11 +107,6 @@ export interface RemoteListing {
   entries: RemoteFsEntry[];
 }
 
-/** The remote command line: a fixed `sh -c` script plus quoted arguments. */
-export function remoteShCommand(script: string, args: string[]): string {
-  return ["exec sh -c", shellQuote(script), "termany", ...args.map(shellQuote)].join(" ");
-}
-
 /** Parse LIST_ENTRIES output. Exported for tests. */
 export function parseRemoteListing(output: string): RemoteListing {
   const lines = output.split("\n");
@@ -171,7 +166,7 @@ export function remoteSh(
   args: string[],
   options: { input?: string; maxBytes?: number } = {},
 ): Promise<Buffer> {
-  return run(sshArgs, remoteShCommand(script, args), { maxBytes: 16 * 1024 * 1024, ...options });
+  return run(sshArgs, script, args, { maxBytes: 16 * 1024 * 1024, ...options });
 }
 
 const queues = new Map<string, { active: number; waiting: (() => void)[] }>();
@@ -196,9 +191,12 @@ async function limited<T>(sshArgs: string[], task: () => Promise<T>): Promise<T>
 
 function run(
   sshArgs: string[],
-  command: string,
+  script: string,
+  args: string[],
   options: { input?: string; maxBytes: number },
 ): Promise<Buffer> {
+  // The host enforces the same timeout, so a killed client frees its session.
+  const command = remoteShCommand(script, args, SSH_TIMEOUT_MS);
   return limited(sshArgs, () => runNow(sshArgs, command, options));
 }
 
@@ -244,13 +242,13 @@ function runNow(
 }
 
 export async function remoteList(sshArgs: string[], dir: string): Promise<RemoteListing> {
-  const out = await run(sshArgs, remoteShCommand(LIST_SCRIPT, [dir]), { maxBytes: 16 * 1024 * 1024 });
+  const out = await run(sshArgs, LIST_SCRIPT, [dir], { maxBytes: 16 * 1024 * 1024 });
   return parseRemoteListing(out.toString("utf8"));
 }
 
 /** List the interactive shell's live cwd, else `fallback`, else $HOME. */
 export async function remoteListSession(sshArgs: string[], fallback: string): Promise<RemoteListing> {
-  const out = await run(sshArgs, remoteShCommand(LIST_SESSION_SCRIPT, [fallback]), {
+  const out = await run(sshArgs, LIST_SESSION_SCRIPT, [fallback], {
     maxBytes: 16 * 1024 * 1024,
   });
   return parseRemoteListing(out.toString("utf8"));
@@ -268,7 +266,7 @@ export async function remoteRead(
   file: string,
   cap: number,
 ): Promise<{ size: number; content: Buffer }> {
-  const out = await run(sshArgs, remoteShCommand(READ_SCRIPT, [file, String(cap)]), {
+  const out = await run(sshArgs, READ_SCRIPT, [file, String(cap)], {
     maxBytes: cap + 64,
   });
   const parsed = splitSizeLine(out);
@@ -277,11 +275,11 @@ export async function remoteRead(
 }
 
 export async function remoteWrite(sshArgs: string[], file: string, content: string): Promise<void> {
-  await run(sshArgs, remoteShCommand(WRITE_SCRIPT, [file]), { input: content, maxBytes: 64 * 1024 });
+  await run(sshArgs, WRITE_SCRIPT, [file], { input: content, maxBytes: 64 * 1024 });
 }
 
 export async function remoteRename(sshArgs: string[], file: string, newName: string): Promise<void> {
-  await run(sshArgs, remoteShCommand(RENAME_SCRIPT, [file, newName]), { maxBytes: 64 * 1024 });
+  await run(sshArgs, RENAME_SCRIPT, [file, newName], { maxBytes: 64 * 1024 });
 }
 
 export async function remoteCreate(
@@ -290,13 +288,13 @@ export async function remoteCreate(
   name: string,
   kind: "file" | "folder",
 ): Promise<void> {
-  await run(sshArgs, remoteShCommand(CREATE_SCRIPT, [dir, name, kind === "folder" ? "dir" : "file"]), {
+  await run(sshArgs, CREATE_SCRIPT, [dir, name, kind === "folder" ? "dir" : "file"], {
     maxBytes: 64 * 1024,
   });
 }
 
 export async function remoteDelete(sshArgs: string[], file: string): Promise<void> {
-  await run(sshArgs, remoteShCommand(DELETE_SCRIPT, [file]), { maxBytes: 64 * 1024 });
+  await run(sshArgs, DELETE_SCRIPT, [file], { maxBytes: 64 * 1024 });
 }
 
 /**
@@ -313,7 +311,9 @@ export function remoteStream(
 ): Promise<{ size: number; body: Readable; kill: () => void }> {
   return new Promise((resolve, reject) => {
     const args = [file, String(start), length === undefined ? "" : String(length)];
-    const child: ChildProcess = spawn("ssh", [...sshArgs, remoteShCommand(MEDIA_SCRIPT, args)], {
+    // No deadline: a long video legitimately streams for minutes, and a stream
+    // the client abandons dies of SIGPIPE on its next write.
+    const child: ChildProcess = spawn("ssh", [...sshArgs, remoteShCommand(MEDIA_SCRIPT, args, null)], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout = child.stdout!;

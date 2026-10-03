@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { getMeta, setMeta } from "./db.js";
+import { shellQuote } from "./remoteCommand.js";
 
 export interface SshConnection {
   /** A managed `profile:<id>` reference or an alias passed to OpenSSH. */
@@ -104,10 +105,6 @@ export function sshRemoteDirCommand(dir: string): string {
     'cd -- "$d" || printf "termany: cannot open %s\\n" "$1" >&2; ' +
     'exec "${SHELL:-/bin/sh}" -l';
   return `exec sh -c ${shellQuote(script)} termany ${shellQuote(dir)}`;
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function sshArgsForProfile(profile: SshProfile): string[] {
