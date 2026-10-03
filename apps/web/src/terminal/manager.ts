@@ -1,6 +1,7 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { getLanguage, translate } from "../i18n";
 import { loadFontConfig } from "../font-config";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -34,6 +35,12 @@ import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
 import { createGlyphAtlasRepairer, onAtlasPagesMerged } from "./glyphAtlas";
+import { isMacWebKit } from "./rendererPlatform";
+import {
+  defaultColorQueryMask,
+  filterDefaultColorReplies,
+  isCodexStartupDefaultColorProbe,
+} from "./defaultColorProbe";
 
 /**
  * The terminal session registry.
@@ -74,6 +81,11 @@ export interface Session {
   contentVersion: number;
   /** Set when this session's shell is an OpenSSH destination. */
   sshTarget?: string;
+  /** Recent PTY output used to recognize Codex's compact startup probe. */
+  defaultColorProbeTail: string;
+  /** OSC 10/11 replies withheld from a one-shot Codex palette probe. */
+  blockedDefaultColorReplies: number;
+  blockedDefaultColorRepliesUntil: number;
 }
 
 /**
@@ -1338,7 +1350,73 @@ export function applyFontSize(size: number) {
   for (const s of sessions.values()) s.term.options.fontSize = size;
 }
 
+/**
+ * Turn off modes a dead shell's programs may have left on: scroll margins,
+ * mouse/focus reporting, bracketed paste, origin mode, application cursor
+ * keys/keypad, hidden cursor, line-drawing charset, SGR attributes. Without
+ * this, e.g. a tmux killed by a dropped SSH link leaves `?1003` on, and every
+ * mouse move types `35;65;47M…` into the next shell.
+ */
+const STALE_MODE_RESET =
+  "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
+  "\x1b[?1l\x1b>\x1b[?25h\x1b(B\x0f\x1b[0m";
+
+/**
+ * Release a terminal mouse drag whose mouseup never arrived.
+ *
+ * xterm's SelectionService (and its mouse-tracking drag reporting) attach
+ * document-level mousemove/mouseup on mousedown and only stop on mouseup —
+ * mousemove never checks `buttons`. WKWebView on macOS drops that mouseup
+ * when the button is released outside the window, over a native menu or
+ * dialog, or mid window-drag, leaving xterm stuck in drag mode: every later
+ * hover extends a huge selection with no button held. The first mousemove
+ * that reports the primary button up finishes the drag with a synthetic
+ * mouseup before xterm sees the move.
+ */
+let stuckDragGuardInstalled = false;
+function installStuckDragGuard() {
+  if (stuckDragGuardInstalled) return;
+  stuckDragGuardInstalled = true;
+  let primaryDragInTerminal = false;
+  window.addEventListener(
+    "mousedown",
+    (event) => {
+      primaryDragInTerminal =
+        event.button === 0 &&
+        event.target instanceof Element &&
+        event.target.closest(".term-host") !== null;
+    },
+    true,
+  );
+  window.addEventListener("mouseup", () => { primaryDragInTerminal = false; }, true);
+  window.addEventListener(
+    "mousemove",
+    (event) => {
+      if (!primaryDragInTerminal || event.buttons & 1) return;
+      primaryDragInTerminal = false;
+      // Dispatched on the move's target so it bubbles through the term host
+      // (select-to-copy) up to the document, where xterm removes its drag
+      // listeners before this mousemove reaches them.
+      (event.target ?? document).dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: event.buttons,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          screenX: event.screenX,
+          screenY: event.screenY,
+        }),
+      );
+    },
+    true,
+  );
+}
+
 function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
+  installStuckDragGuard();
   const existing = sessions.get(id);
   if (existing) return existing;
 
@@ -1409,8 +1487,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       const finishReset = () => {
         const row = term.buffer.active.cursorY + 1; // where the replay ended
         term.write(
-          "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
-            "\x1b[?25h\x1b(B\x0f\x1b[0m" +
+          STALE_MODE_RESET +
             `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
             "\r\n", // no divider — history flows straight into the new shell
           () => {
@@ -1485,6 +1562,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     connectionState: sshTarget ? "connecting" : undefined,
     contentVersion: 0,
     sshTarget,
+    defaultColorProbeTail: "",
+    blockedDefaultColorReplies: 0,
+    blockedDefaultColorRepliesUntil: 0,
   };
   sessions.set(id, session);
   refreshOnSymbolsFontLoad();
@@ -1492,6 +1572,20 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
 
   const wireBackend = (b: ITerminalBackend) => {
     b.onData((data) => {
+      const probeWindow = (session.defaultColorProbeTail + data).slice(-160);
+      const queryMask = defaultColorQueryMask(data);
+      if (
+        queryMask &&
+        (agentSessionKinds.get(id) === "codex" ||
+          isCodexStartupDefaultColorProbe(probeWindow))
+      ) {
+        // Codex caches this answer for the life of the TUI. Withholding it
+        // makes Codex render against terminal-default colors, which xterm can
+        // safely retint when Termany switches between dark and light themes.
+        session.blockedDefaultColorReplies |= queryMask;
+        session.blockedDefaultColorRepliesUntil = Date.now() + 1_000;
+      }
+      session.defaultColorProbeTail = probeWindow;
       if (sshTarget && session.connectionState !== "connected") {
         session.connectionState = "connected";
         notifyConnectionStatus();
@@ -1547,7 +1641,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         return;
       }
       session.restartAttempts++;
-      term.write(`\r\n\x1b[2m[session ended — starting a new shell]\x1b[0m\r\n`);
+      // `?1047l` leaves a stale alternate screen without `?1049l`'s cursor
+      // restore, and is a no-op on the normal screen.
+      term.write(`\x1b[?1047l${STALE_MODE_RESET}\r\n\x1b[2m[session ended — starting a new shell]\x1b[0m\r\n`);
       const next = spawnBackend();
       session.backend = next;
       session.spawnedAt = Date.now();
@@ -1561,6 +1657,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     session.ended = false;
     session.connectionState = "connecting";
     notifyConnectionStatus();
+    term.write(`\x1b[?1047l${STALE_MODE_RESET}`); // see the auto-restart above
     const next = spawnBackend();
     session.backend = next;
     session.spawnedAt = Date.now();
@@ -1569,6 +1666,16 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
 
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
+    if (session.blockedDefaultColorReplies) {
+      if (Date.now() <= session.blockedDefaultColorRepliesUntil) {
+        const filtered = filterDefaultColorReplies(data, session.blockedDefaultColorReplies);
+        session.blockedDefaultColorReplies = filtered.pendingMask;
+        data = filtered.data;
+        if (!data) return;
+      } else {
+        session.blockedDefaultColorReplies = 0;
+      }
+    }
     if (sshTarget && session.ended) {
       if (/[\r\n]/.test(data)) {
         term.write("\r\n");
@@ -1676,22 +1783,6 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   );
 
   return session;
-}
-
-/**
- * True only inside macOS WKWebView/Safari. The IME workarounds below are
- * corrections for *that* engine's event ordering, and both are actively
- * harmful elsewhere. Linux Tauri renders through WebKitGTK, whose UA is also
- * "AppleWebKit … Safari" with no Chrome token — matching on the UA alone made
- * both fixes run there, where ibus/fcitx emit ordinary composition events and
- * xterm already handles the commit. The extra copy from the beforeinput hook
- * below is what users saw as every committed word arriving twice ("你好今天今天").
- */
-function isMacWebKit() {
-  const ua = navigator.userAgent;
-  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform) || ua.includes("Macintosh");
-  return isPureWebKit && isMac;
 }
 
 /**
@@ -1830,19 +1921,30 @@ export function attachSession(
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
     if (s.term.textarea) applyTextInputProps(s.term.textarea);
-    // GPU renderer: the default DOM renderer repaints character-by-character and
-    // makes echo feel laggy. WebGL must be loaded AFTER open(). If the GPU context
-    // is lost (driver reset / tab backgrounded), dispose so xterm falls back to DOM.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      // A page merge in the shared atlas rewrites glyph coordinates out from
-      // under every pane that isn't rendering right now, which is what makes
-      // text come back as the wrong characters until the pane is resized.
-      onAtlasPagesMerged(webgl, () => glyphAtlasRepairer.requestRepair());
-      s.term.loadAddon(webgl);
-    } catch {
-      /* no WebGL available — DOM renderer still works */
+    // macOS 26.5+ has a WKWebView/Safari WebGL regression that leaves old
+    // terminal frames composited over new ones. Canvas 2D is xterm's supported
+    // accelerated fallback and also clears transparent theme backgrounds
+    // correctly. Other engines keep the faster WebGL renderer.
+    if (isMacWebKit()) {
+      try {
+        s.term.loadAddon(new CanvasAddon());
+      } catch {
+        /* no Canvas 2D available — DOM renderer still works */
+      }
+    } else {
+      // WebGL must be loaded AFTER open(). If the GPU context is lost (driver
+      // reset / tab backgrounded), dispose so xterm falls back to DOM.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        // A page merge in the shared atlas rewrites glyph coordinates out from
+        // under every pane that isn't rendering right now, which is what makes
+        // text come back as the wrong characters until the pane is resized.
+        onAtlasPagesMerged(webgl, () => glyphAtlasRepairer.requestRepair());
+        s.term.loadAddon(webgl);
+      } catch {
+        /* no WebGL available — DOM renderer still works */
+      }
     }
     fixWebkitImeDirectInsert(s.term);
     fixAbandonedImeFinalize(s.term);
@@ -2237,6 +2339,11 @@ export function disposeSession(id: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: [id] }),
   }).catch(() => {});
+}
+
+/** Whether a pane has attached a shell (local or SSH) in this window. */
+export function paneHasShell(paneId: string): boolean {
+  return (sessionIdsByPane.get(paneId)?.size ?? 0) > 0;
 }
 
 /** Close every cached local/SSH session owned by a pane. */

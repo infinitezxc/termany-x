@@ -11,6 +11,7 @@ import { useStore } from "../state/store";
 import {
   checkForUpdate,
   installUpdate,
+  isUnsupportedUpdatePlatformError,
   isUpdateInstalled,
   relaunchApp,
   runningTaskCount,
@@ -164,14 +165,21 @@ export function Settings({
   const [version, setVersion] = useState("0.1.0");
   const [aboutError, setAboutError] = useState<string | null>(null);
 
-  // Self-update flow (desktop only): idle → checking → (none | available) →
-  // downloading → (waiting → ready | restarting). `updateVersion` is
+  // Self-update flow (desktop only): idle → checking → (none | unsupported |
+  // available) → downloading → (waiting → ready | restarting). `updateVersion` is
   // global so badges stay in sync; the installed flag lives in updater.ts so
   // closing and reopening Settings does not offer to download it twice.
   const updateVersion = useStore((s) => s.updateVersion);
   const setUpdateVersion = useStore((s) => s.setUpdateVersion);
   const [updPhase, setUpdPhase] = useState<
-    "idle" | "checking" | "none" | "downloading" | "waiting" | "ready" | "restarting"
+    | "idle"
+    | "checking"
+    | "none"
+    | "unsupported"
+    | "downloading"
+    | "waiting"
+    | "ready"
+    | "restarting"
   >(() => (isUpdateInstalled() ? "waiting" : "idle"));
   const [updPct, setUpdPct] = useState(0);
   const [runningTasks, setRunningTasks] = useState(0);
@@ -189,6 +197,10 @@ export function Settings({
       setUpdateVersion(u?.version ?? null);
       setUpdPhase(u ? "idle" : "none");
     } catch (e) {
+      if (isUnsupportedUpdatePlatformError(e)) {
+        setUpdPhase("unsupported");
+        return;
+      }
       setUpdError(e instanceof Error ? e.message : String(e));
       setUpdPhase("idle");
     }
@@ -707,6 +719,8 @@ export function Settings({
                           {t("about.updateRestart", { version: updateVersion })}
                         </button>
                       )
+                    ) : updPhase === "unsupported" ? (
+                      <span className="update-status">{t("about.updateUnavailable")}</span>
                     ) : (
                       <button
                         className="update-check-btn"
