@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { loadAgentConfigs } from "../agents";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
+import { cutKeystrokes } from "./cutSelection";
 import { applyTextInputProps } from "../textInputProps";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
@@ -1506,7 +1507,13 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   registerWebLinks(term);
   // Let programs copy to the local clipboard via OSC 52 — the only copy channel
   // that survives SSH, and how agent CLIs expect "copy" to work. Write-only.
-  registerOsc52(term);
+  let appSelection: string | null = null;
+  registerOsc52(term, (text) => {
+    // A mouse-tracking app (Claude Code, …) draws its own selection and copies
+    // it this way; remember it so ⌘X can cut it (see the `cut` listener).
+    appSelection = term.modes.mouseTrackingMode !== "none" ? text : null;
+    return writeClipboard(text);
+  });
   // Local file paths (including relative ones like `src/foo.ts`) are verified
   // and resolved by the server against this shell's live cwd. If the server
   // can't answer (demo mode, old server), fall back to trusting absolute
@@ -1683,6 +1690,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       return;
     }
+    // Any keystroke may move or clear the app's selection; mouse reports
+    // (hover, wheel) leave it alone.
+    if (!data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
     noteAgentInput(id, data);
     writeTerminalInput(id, session, data);
   });
@@ -1699,6 +1709,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     clickCount: number;
   } | null = null;
   el.addEventListener("mousedown", (event) => {
+    appSelection = null; // a click clears or restarts the app's selection
     if (event.button !== 0) {
       selectionGesture = null;
       return;
@@ -1728,6 +1739,33 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     // Use trim only as an emptiness check. Copy the original selection so
     // meaningful indentation and line breaks are preserved.
     if (sel.trim()) void writeClipboard(sel);
+  });
+
+  // ⌘X: copy the selection, and when it lies in the command being typed,
+  // also delete it from the shell's input line (see cutKeystrokes). ⌘X arrives
+  // as a native cut on xterm's hidden textarea, whose own selection is empty —
+  // WebKit only enables Edit → Cut there if `beforecut` is cancelled.
+  el.addEventListener("beforecut", (event) => {
+    if (term.hasSelection() || appSelection !== null) event.preventDefault();
+  });
+  el.addEventListener("cut", (event) => {
+    const range = term.getSelectionPosition();
+    if (!range) {
+      // The selection lives in the app, which already copied it over OSC 52;
+      // Backspace is how such apps delete a selection.
+      if (appSelection === null) return;
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", appSelection);
+      appSelection = null;
+      term.input("\x7f");
+      return;
+    }
+    event.preventDefault();
+    event.clipboardData?.setData("text/plain", term.getSelection());
+    const keys = cutKeystrokes(term.buffer.active, range);
+    if (!keys) return;
+    term.clearSelection();
+    term.input(keys);
   });
 
   // Paste image blobs as local file paths only when the active program looks
