@@ -1,9 +1,10 @@
 import { textInputProps } from "../textInputProps";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
 import { useImeGuard } from "../imeGuard";
+import { useNativeOccluder } from "../nativeViewOcclusion";
 import { revealPath } from "../openExternal";
 import { activeHtab, findLeaf, remoteSessionFor, useStore } from "../state/store";
 import { sendCommand, terminalSessionId } from "../terminal/manager";
@@ -11,6 +12,7 @@ import {
   ChevronIcon,
   CloseIcon,
   CollapseAllIcon,
+  EditIcon,
   FileEntryIcon,
   FolderIcon,
   PanelLeftCloseIcon,
@@ -19,6 +21,7 @@ import {
   RestoreExpandedIcon,
   RevealFolderIcon,
   SourceIcon,
+  TrashIcon,
 } from "./icons";
 
 /** Base name only (Windows- and Unix-style separators both) — the preview
@@ -38,6 +41,21 @@ function quoteForShell(path: string): string {
  *  lives on (see remoteSessionFor); without it the path is local. */
 function fsUrl(endpoint: string, params: Record<string, string>, remote?: string): string {
   return `${apiUrl()}/api/fs/${endpoint}?${new URLSearchParams(remote ? { ...params, session: remote } : params)}`;
+}
+
+/** POST a JSON body to an /api/fs endpoint; rejects with the server's error. */
+async function fsPost(endpoint: string, body: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`${apiUrl()}/api/fs/${endpoint}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error || `HTTP ${res.status}`);
+}
+
+/** Whether `path` is `base` itself or somewhere beneath it. */
+function isWithin(path: string, base: string): boolean {
+  return path === base || path.startsWith(`${base}/`);
 }
 
 type MediaKind = "image" | "video" | "audio" | "pdf" | "docx" | "xlsx" | "pptx";
@@ -346,6 +364,48 @@ function formatDate(ms: number): string {
   });
 }
 
+/** The name box for a new file/folder, sitting where the entry will appear.
+ *  Enter creates it; Esc, or leaving it empty, drops the draft. */
+function NewEntryRow({
+  kind,
+  depth,
+  onCreate,
+  onCancel,
+}: {
+  kind: NewEntryKind;
+  depth: number;
+  onCreate: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const ime = useImeGuard();
+  return (
+    <div className="file-tree-row menu-open" style={{ paddingLeft: 4 + depth * 9 }}>
+      <span className="file-tree-twisty" />
+      <span className="file-tree-icon">{kind === "folder" ? <FolderIcon /> : <FileEntryIcon />}</span>
+      <input
+        {...textInputProps}
+        {...ime.props}
+        className="tree-rename file-tree-rename"
+        autoFocus
+        placeholder={kind === "folder" ? "Folder name" : "File name"}
+        onBlur={(e) => {
+          const name = e.target.value.trim();
+          if (name) onCreate(name);
+          else onCancel();
+        }}
+        onKeyDown={(e) => {
+          if (ime.handled(e)) return;
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          else if (e.key === "Escape") {
+            (e.target as HTMLInputElement).value = "";
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 /**
  * One row + (if a directory, expanded) its children, to any depth — mirrors
  * TreeSidebar's TreeItem. Clicking a folder expands/collapses it IN PLACE;
@@ -360,8 +420,16 @@ function FileTreeRow({
   dirs,
   expanded,
   selectedPath,
+  menuPath,
+  renamingPath,
+  creating,
   onToggleDir,
   onSelectFile,
+  onContextMenu,
+  onRename,
+  onCancelRename,
+  onCreate,
+  onCancelCreate,
 }: {
   path: string;
   entry: FsEntry;
@@ -369,33 +437,92 @@ function FileTreeRow({
   dirs: Record<string, DirState>;
   expanded: Set<string>;
   selectedPath: string | null;
+  /** The row a context menu is open on — kept highlighted while it is. */
+  menuPath: string | null;
+  /** The row whose name is being edited in place. */
+  renamingPath: string | null;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onContextMenu: (path: string, entry: FsEntry, x: number, y: number) => void;
+  onRename: (path: string, name: string) => void;
+  onCancelRename: () => void;
+  /** A new entry being named — drafted inside this folder when `dir` is it. */
+  creating: Creating | null;
+  onCreate: (dir: string, name: string, kind: NewEntryKind) => void;
+  onCancelCreate: () => void;
 }) {
   const isOpen = entry.isDir && expanded.has(path);
   const state = dirs[path];
+  const renaming = renamingPath === path;
+  const ime = useImeGuard();
 
   return (
     <>
       <div
-        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""}`}
+        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
-        onClick={() => (entry.isDir ? onToggleDir(path) : onSelectFile(path))}
+        onClick={() => {
+          if (renaming) return;
+          if (entry.isDir) onToggleDir(path);
+          else onSelectFile(path);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenu(path, entry, e.clientX, e.clientY);
+        }}
       >
         <span className="file-tree-twisty">
           {entry.isDir && <ChevronIcon dir={isOpen ? "down" : "right"} />}
         </span>
         <span className="file-tree-icon">{entry.isDir ? <FolderIcon /> : <FileEntryIcon />}</span>
-        <span className="file-tree-name">{entry.name}</span>
+        {renaming ? (
+          <input
+            {...textInputProps}
+            {...ime.props}
+            className="tree-rename file-tree-rename"
+            autoFocus
+            defaultValue={entry.name}
+            onFocus={(e) => {
+              // Select the stem only, like Finder — the extension rarely changes.
+              const dot = entry.isDir ? -1 : entry.name.lastIndexOf(".");
+              e.target.setSelectionRange(0, dot > 0 ? dot : entry.name.length);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => {
+              const name = e.target.value.trim();
+              if (name && name !== entry.name) onRename(path, name);
+              else onCancelRename();
+            }}
+            onKeyDown={(e) => {
+              if (ime.handled(e)) return;
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              else if (e.key === "Escape") {
+                (e.target as HTMLInputElement).value = entry.name;
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+        ) : (
+          <span className="file-tree-name">{entry.name}</span>
+        )}
         <span className="file-tree-size">{formatSize(entry.size, entry.isDir)}</span>
         <span className="file-tree-date">{formatDate(entry.mtimeMs)}</span>
       </div>
+      {isOpen && creating?.dir === path && (
+        <NewEntryRow
+          kind={creating.kind}
+          depth={depth + 1}
+          onCreate={(name) => onCreate(path, name, creating.kind)}
+          onCancel={onCancelCreate}
+        />
+      )}
       {isOpen && state?.status === "error" && (
         <div className="file-tree-message" style={{ paddingLeft: 4 + (depth + 1) * 9 }}>
           {state.error}
         </div>
       )}
-      {isOpen && state?.status === "loaded" && state.entries!.length === 0 && (
+      {isOpen && state?.status === "loaded" && state.entries!.length === 0 && creating?.dir !== path && (
         <div className="file-tree-message" style={{ paddingLeft: 4 + (depth + 1) * 9 }}>
           Empty directory
         </div>
@@ -411,11 +538,135 @@ function FileTreeRow({
             dirs={dirs}
             expanded={expanded}
             selectedPath={selectedPath}
+            menuPath={menuPath}
+            renamingPath={renamingPath}
+            creating={creating}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
+            onContextMenu={onContextMenu}
+            onRename={onRename}
+            onCancelRename={onCancelRename}
+            onCreate={onCreate}
+            onCancelCreate={onCancelCreate}
           />
         ))}
     </>
+  );
+}
+
+type NewEntryKind = "file" | "folder";
+
+/** A name being typed for a new entry, shown as a draft row inside `dir`. */
+interface Creating {
+  dir: string;
+  kind: NewEntryKind;
+}
+
+interface EntryMenu {
+  /** The right-clicked entry, or the tree's root for its empty space. */
+  path: string;
+  /** Null for the empty space below the rows — only "New …" applies there. */
+  entry: FsEntry | null;
+  x: number;
+  y: number;
+  /** Delete was clicked once — the menu now asks to confirm it. */
+  confirmDelete: boolean;
+}
+
+const ENTRY_MENU_WIDTH = 220;
+const ENTRY_MENU_HEIGHT = 170;
+const ENTRY_MENU_MARGIN = 8;
+
+/** Right-click menu on a tree row: new file/folder, rename in place, or
+ *  delete (confirmed). */
+function FileEntryMenu({
+  menu,
+  onNew,
+  onRename,
+  onDelete,
+  onConfirmDelete,
+  onClose,
+}: {
+  menu: EntryMenu;
+  onNew: (kind: NewEntryKind) => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onConfirmDelete: () => void;
+  onClose: () => void;
+}) {
+  const ref = useNativeOccluder<HTMLDivElement>(`file-tree-entry-menu-${useId()}`);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("pointerdown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape, true);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("scroll", onClose, true);
+    return () => {
+      window.removeEventListener("pointerdown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape, true);
+      window.removeEventListener("resize", onClose);
+      window.removeEventListener("scroll", onClose, true);
+    };
+  }, [ref, onClose]);
+
+  const x = Math.max(ENTRY_MENU_MARGIN, Math.min(menu.x, window.innerWidth - ENTRY_MENU_WIDTH - ENTRY_MENU_MARGIN));
+  const y = Math.max(ENTRY_MENU_MARGIN, Math.min(menu.y, window.innerHeight - ENTRY_MENU_HEIGHT - ENTRY_MENU_MARGIN));
+  return (
+    <div className="agent-context-menu file-tree-entry-menu" role="menu" ref={ref} style={{ left: x, top: y }}>
+      {menu.confirmDelete && menu.entry ? (
+        <>
+          <div className="file-tree-entry-menu-prompt" title={menu.entry.name}>
+            Delete “{menu.entry.name}”{menu.entry.isDir ? " and everything in it" : ""}? This can’t be undone.
+          </div>
+          <button type="button" role="menuitem" className="danger" autoFocus onClick={onConfirmDelete}>
+            <TrashIcon />
+            Delete
+          </button>
+          <button type="button" role="menuitem" onClick={onClose}>
+            <CloseIcon />
+            Cancel
+          </button>
+        </>
+      ) : (
+        <>
+          {/* Creating needs a folder to create in — a file only gets its own actions. */}
+          {(!menu.entry || menu.entry.isDir) && (
+            <>
+              <button type="button" role="menuitem" onClick={() => onNew("file")}>
+                <FileEntryIcon />
+                New File
+              </button>
+              <button type="button" role="menuitem" onClick={() => onNew("folder")}>
+                <FolderIcon />
+                New Folder
+              </button>
+            </>
+          )}
+          {menu.entry && (
+            <>
+              {menu.entry.isDir && <div className="agent-context-menu-separator" />}
+              <button type="button" role="menuitem" onClick={onRename}>
+                <EditIcon />
+                Rename
+              </button>
+              <div className="agent-context-menu-separator" />
+              <button type="button" role="menuitem" className="danger" onClick={onDelete}>
+                <TrashIcon />
+                Delete
+              </button>
+            </>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -964,6 +1215,82 @@ function FileTreeView({
     if (opening && !dirs[path]) loadDir(path);
   };
 
+  const [entryMenu, setEntryMenu] = useState<EntryMenu | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [creating, setCreating] = useState<Creating | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+  const closeEntryMenu = useCallback(() => setEntryMenu(null), []);
+
+  const openEntryMenu = (path: string, entry: FsEntry | null, x: number, y: number) => {
+    window.getSelection()?.removeAllRanges();
+    setRenamingPath(null);
+    setCreating(null);
+    setEntryMenu({ path, entry, x, y, confirmDelete: false });
+  };
+
+  // Drop everything the tree knows under `oldPath` — or, for a rename, carry
+  // the expanded folders and open file over to where they now live.
+  const forgetPath = (oldPath: string, newPath: string | null) => {
+    const move = (p: string) => (newPath ? newPath + p.slice(oldPath.length) : null);
+    setExpanded((prev) => {
+      const next = new Set<string>();
+      prev.forEach((p) => {
+        if (!isWithin(p, oldPath)) next.add(p);
+        else if (newPath) next.add(move(p)!);
+      });
+      return next;
+    });
+    setCollapsedFrom(null);
+    setDirs((d) => Object.fromEntries(Object.entries(d).filter(([p]) => !isWithin(p, oldPath))));
+    if (selected && isWithin(selected.path, oldPath)) {
+      if (newPath) selectFile(move(selected.path)!);
+      else closePreview();
+    }
+    if (newPath) expanded.forEach((p) => isWithin(p, oldPath) && loadDir(move(p)!));
+  };
+
+  const renameEntry = (path: string, name: string) => {
+    setRenamingPath(null);
+    setOpError(null);
+    fsPost("rename", { path, name, session: remote })
+      .then(() => {
+        forgetPath(path, `${dirname(path)}/${name}`);
+        loadDir(dirname(path));
+      })
+      .catch((e) => setOpError(`Rename failed: ${e instanceof Error ? e.message : String(e)}`));
+  };
+
+  // Draft the new entry inside the right-clicked folder (opening it so the
+  // draft is visible), or at the root for the empty space.
+  const startCreate = (menu: EntryMenu, kind: NewEntryKind) => {
+    setEntryMenu(null);
+    const dir = menu.path;
+    if (dir !== root && !expanded.has(dir)) toggleDir(dir);
+    setCreating({ dir, kind });
+  };
+
+  const createEntry = (dir: string, name: string, kind: NewEntryKind) => {
+    setCreating(null);
+    setOpError(null);
+    fsPost("create", { dir, name, kind, session: remote })
+      .then(() => {
+        loadDir(dir);
+        if (kind === "file") selectFile(`${dir}/${name}`);
+      })
+      .catch((e) => setOpError(`Create failed: ${e instanceof Error ? e.message : String(e)}`));
+  };
+
+  const deleteEntry = (path: string) => {
+    setEntryMenu(null);
+    setOpError(null);
+    fsPost("delete", { path, session: remote })
+      .then(() => {
+        forgetPath(path, null);
+        loadDir(dirname(path));
+      })
+      .catch((e) => setOpError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`));
+  };
+
   // Refresh re-fetches the CURRENT root (wherever it is — session-resolved or
   // manually navigated to) plus every currently-expanded subdirectory, so the
   // open shape of the tree survives — only the contents go stale-free. Unlike
@@ -1041,9 +1368,29 @@ function FileTreeView({
           <RefreshIcon />
         </button>
       </div>
-      <div className="file-tree-list">
+      <div
+        className="file-tree-list"
+        onContextMenu={(e) => {
+          // Rows handle (and stop) their own; this is the empty space around them.
+          e.preventDefault();
+          if (root && !rootError) openEntryMenu(root, null, e.clientX, e.clientY);
+        }}
+      >
         {rootError && <div className="file-tree-message">{rootError}</div>}
-        {!rootError && rootState?.status === "loaded" && rootState.entries!.length === 0 && (
+        {opError && (
+          <div className="file-tree-message file-preview-error" onClick={() => setOpError(null)}>
+            {opError}
+          </div>
+        )}
+        {!rootError && root && creating?.dir === root && (
+          <NewEntryRow
+            kind={creating.kind}
+            depth={0}
+            onCreate={(name) => createEntry(root, name, creating.kind)}
+            onCancel={() => setCreating(null)}
+          />
+        )}
+        {!rootError && rootState?.status === "loaded" && rootState.entries!.length === 0 && creating?.dir !== root && (
           <div className="file-tree-message">Empty directory</div>
         )}
         {!rootError &&
@@ -1057,11 +1404,32 @@ function FileTreeView({
               dirs={dirs}
               expanded={expanded}
               selectedPath={selected?.path ?? null}
+              menuPath={entryMenu?.path ?? null}
+              renamingPath={renamingPath}
+              creating={creating}
               onToggleDir={toggleDir}
               onSelectFile={selectFile}
+              onContextMenu={openEntryMenu}
+              onRename={renameEntry}
+              onCancelRename={() => setRenamingPath(null)}
+              onCreate={createEntry}
+              onCancelCreate={() => setCreating(null)}
             />
           ))}
       </div>
+      {entryMenu && (
+        <FileEntryMenu
+          menu={entryMenu}
+          onNew={(kind) => startCreate(entryMenu, kind)}
+          onRename={() => {
+            setRenamingPath(entryMenu.path);
+            setEntryMenu(null);
+          }}
+          onDelete={() => setEntryMenu({ ...entryMenu, confirmDelete: true })}
+          onConfirmDelete={() => deleteEntry(entryMenu.path)}
+          onClose={closeEntryMenu}
+        />
+      )}
     </>
   );
 

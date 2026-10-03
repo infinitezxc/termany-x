@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,8 +11,11 @@ import {
   parseRemoteListing,
   remoteGitHost,
   remoteList,
+  remoteCreate,
+  remoteDelete,
   remoteListSession,
   remoteRead,
+  remoteRename,
   remoteSh,
   remoteStream,
   remoteWrite,
@@ -112,6 +115,41 @@ test(
 
     await remoteWrite([], file, "it's new\n");
     assert.equal(readFileSync(file, "utf8"), "it's new\n");
+  }),
+);
+
+test(
+  "creates, renames without overwriting, and deletes files and folders",
+  withFakeSsh(async (root) => {
+    const file = path.join(root, "it's a file.txt");
+    writeFileSync(file, "hi");
+    writeFileSync(path.join(root, "taken.txt"), "keep");
+    mkdirSync(path.join(root, "dir", "nested"), { recursive: true });
+    writeFileSync(path.join(root, "dir", "nested", "x"), "x");
+    symlinkSync(path.join(root, "dir"), path.join(root, "link"));
+
+    await assert.rejects(remoteRename([], file, "taken.txt"), /taken\.txt already exists/);
+    await assert.rejects(remoteRename([], file, "dir"), /dir already exists/);
+    await remoteRename([], file, "renamed $(x).txt");
+    assert.equal(readFileSync(path.join(root, "renamed $(x).txt"), "utf8"), "hi");
+    await assert.rejects(remoteRename([], file, "again.txt"), /no such file/);
+
+    // A symlink goes, but what it points at stays.
+    await remoteDelete([], path.join(root, "link"));
+    assert.equal(existsSync(path.join(root, "link")), false);
+    assert.equal(existsSync(path.join(root, "dir", "nested", "x")), true);
+
+    await remoteCreate([], "~", "new $(x).txt", "file");
+    assert.equal(readFileSync(path.join(root, "new $(x).txt"), "utf8"), "");
+    await assert.rejects(remoteCreate([], root, "taken.txt", "file"), /taken\.txt already exists/);
+    await assert.rejects(remoteCreate([], root, "taken.txt", "folder"), /taken\.txt already exists/);
+    await remoteCreate([], path.join(root, "dir"), "made", "folder");
+    assert.equal(statSync(path.join(root, "dir", "made")).isDirectory(), true);
+    await assert.rejects(remoteCreate([], path.join(root, "missing"), "x", "file"), /not a directory/);
+
+    await remoteDelete([], "~/dir");
+    assert.equal(existsSync(path.join(root, "dir")), false);
+    await assert.rejects(remoteDelete([], path.join(root, "dir")), /no such file/);
   }),
 );
 

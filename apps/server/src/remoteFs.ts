@@ -75,6 +75,25 @@ const MEDIA_SCRIPT =
 /** $1 = file. Content arrives on stdin. */
 const WRITE_SCRIPT = `${EXPAND_P} cat > "$p"`;
 
+/** $1 = entry, $2 = new base name (validated by the caller). Refuses to
+ *  overwrite: `mv` onto an existing directory would move INTO it instead. */
+const RENAME_SCRIPT =
+  `${EXPAND_P} { [ -e "$p" ] || [ -L "$p" ]; } || { echo "no such file or directory" >&2; exit 3; }; ` +
+  't=$(dirname -- "$p")/$2; if [ -e "$t" ] || [ -L "$t" ]; then echo "$2 already exists" >&2; exit 3; fi; ' +
+  'mv -- "$p" "$t"';
+
+/** $1 = directory, $2 = new base name (validated by the caller), $3 = `dir`
+ *  for a folder, else an empty file. Refuses to touch anything already there. */
+const CREATE_SCRIPT =
+  `${EXPAND_P} [ -d "$p" ] || { echo "not a directory" >&2; exit 3; }; ` +
+  't=$p/$2; if [ -e "$t" ] || [ -L "$t" ]; then echo "$2 already exists" >&2; exit 3; fi; ' +
+  'if [ "$3" = dir ]; then mkdir -- "$t"; else : > "$t"; fi';
+
+/** $1 = entry. A symlink is removed itself, never what it points to. */
+const DELETE_SCRIPT =
+  `${EXPAND_P} { [ -e "$p" ] || [ -L "$p" ]; } || { echo "no such file or directory" >&2; exit 3; }; ` +
+  'rm -rf -- "$p"';
+
 export interface RemoteFsEntry {
   name: string;
   isDir: boolean;
@@ -259,6 +278,25 @@ export async function remoteRead(
 
 export async function remoteWrite(sshArgs: string[], file: string, content: string): Promise<void> {
   await run(sshArgs, remoteShCommand(WRITE_SCRIPT, [file]), { input: content, maxBytes: 64 * 1024 });
+}
+
+export async function remoteRename(sshArgs: string[], file: string, newName: string): Promise<void> {
+  await run(sshArgs, remoteShCommand(RENAME_SCRIPT, [file, newName]), { maxBytes: 64 * 1024 });
+}
+
+export async function remoteCreate(
+  sshArgs: string[],
+  dir: string,
+  name: string,
+  kind: "file" | "folder",
+): Promise<void> {
+  await run(sshArgs, remoteShCommand(CREATE_SCRIPT, [dir, name, kind === "folder" ? "dir" : "file"]), {
+    maxBytes: 64 * 1024,
+  });
+}
+
+export async function remoteDelete(sshArgs: string[], file: string): Promise<void> {
+  await run(sshArgs, remoteShCommand(DELETE_SCRIPT, [file]), { maxBytes: 64 * 1024 });
 }
 
 /**

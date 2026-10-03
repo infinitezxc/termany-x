@@ -10149,3 +10149,20 @@ html.tauri #root {
   .gateway-mode-picker, .gateway-form .ms-field-row { flex-direction: column; }
   .gateway-form .ms-field-row { grid-template-columns: minmax(0, 1fr); }
 }
+.file-tree-row.menu-open {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.file-tree-rename {
+  font-size: 12.5px;
+}
+.file-tree-entry-menu {
+  width: min(220px, calc(100vw - 16px));
+}
+.file-tree-entry-menu-prompt {
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}

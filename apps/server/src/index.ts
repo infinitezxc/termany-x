@@ -39,6 +39,9 @@ import {
   remoteSessionCwd,
   remoteSh,
   remoteStream,
+  remoteCreate,
+  remoteDelete,
+  remoteRename,
   remoteWrite,
 } from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
@@ -435,6 +438,24 @@ function remoteFsFor(sessionId: string | null): { args: string[]; target: string
   const args = sshPortForwarding.execArgs(sessionId);
   if (!args) throw new Error("Remote files are not available for this SSH connection");
   return { args, target: session.sshTarget };
+}
+
+/** A bare base name for a renamed or new entry — no separators, no `.`/`..`. */
+function fsEntryName(value: unknown): string {
+  const name = String(value ?? "").trim();
+  if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) throw new Error("invalid name");
+  return name;
+}
+
+/** A rename/delete target: required, and never a filesystem root or bare `~`. */
+function fsEntryPath(value: unknown): string {
+  const requested = String(value ?? "").trim();
+  if (!requested) throw new Error("path is required");
+  const resolved = requested.startsWith("~") ? requested : path.resolve(requested);
+  if (resolved === "~" || resolved === "~/" || path.dirname(resolved) === resolved) {
+    throw new Error("refusing to modify a root directory");
+  }
+  return requested;
 }
 
 function activityPayload() {
@@ -1442,6 +1463,70 @@ const http = createServer((req, res) => {
         const remote = remoteFsFor(body?.session ? String(body.session) : null);
         if (remote) await remoteWrite(remote.args, requested, content);
         else await fs.promises.writeFile(path.resolve(requested), content, "utf8");
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Rename / delete an entry from the file tree's context menu. `name` is a
+  // bare base name — renaming never moves an entry to another directory.
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/rename") {
+    readJson(req)
+      .then(async (body) => {
+        const requested = fsEntryPath(body?.path);
+        const name = fsEntryName(body?.name);
+        const remote = remoteFsFor(body?.session ? String(body.session) : null);
+        if (remote) await remoteRename(remote.args, requested, name);
+        else {
+          const abs = path.resolve(requested);
+          const target = path.join(path.dirname(abs), name);
+          // fs.rename silently replaces an existing file — refuse instead.
+          // A case-only rename on a case-insensitive disk "exists" as itself.
+          const existing = await fs.promises.lstat(target).catch(() => null);
+          const self = await fs.promises.lstat(abs);
+          if (existing && !(existing.ino === self.ino && existing.dev === self.dev)) {
+            throw new Error(`${name} already exists`);
+          }
+          await fs.promises.rename(abs, target);
+        }
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // New empty file or folder from the file tree's context menu; never overwrites.
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/create") {
+    readJson(req)
+      .then(async (body) => {
+        const dir = String(body?.dir ?? "").trim();
+        if (!dir) throw new Error("dir is required");
+        const name = fsEntryName(body?.name);
+        const kind = body?.kind === "folder" ? "folder" : "file";
+        const remote = remoteFsFor(body?.session ? String(body.session) : null);
+        if (remote) await remoteCreate(remote.args, dir, name, kind);
+        else {
+          const target = path.join(path.resolve(dir), name);
+          await (kind === "folder" ? fs.promises.mkdir(target) : fs.promises.writeFile(target, "", { flag: "wx" })).catch(
+            (e) => {
+              throw (e as NodeJS.ErrnoException).code === "EEXIST" ? new Error(`${name} already exists`) : e;
+            },
+          );
+        }
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/delete") {
+    readJson(req)
+      .then(async (body) => {
+        const requested = fsEntryPath(body?.path);
+        const remote = remoteFsFor(body?.session ? String(body.session) : null);
+        if (remote) await remoteDelete(remote.args, requested);
+        else await fs.promises.rm(path.resolve(requested), { recursive: true });
         json(200, { ok: true });
       })
       .catch(fail);
