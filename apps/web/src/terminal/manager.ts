@@ -908,6 +908,13 @@ export function hasActiveAgentSession(ids: string[]): boolean {
   return ids.some((id) => agentActiveSessions.has(activeSessionId(id)));
 }
 
+/** The agent whose TUI owns this pane's terminal right now, if any. */
+export function activeAgentKind(id: string): string | undefined {
+  id = activeSessionId(id);
+  if (!agentActiveSessions.has(id)) return undefined;
+  return agentActivities.get(id)?.agent ?? agentSessionKinds.get(id);
+}
+
 export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
   let best: AgentActivity | null = null;
   const rank: Record<AgentActivityStatus, number> = { error: 3, working: 2, done: 1 };
@@ -2320,11 +2327,18 @@ function sessionVisibleText(id: string): string {
   const buf = session.term.buffer.active;
   const start = Math.max(0, buf.viewportY);
   const end = Math.min(buf.length, start + session.term.rows);
+  // Soft-wrapped rows are rejoined into the line the program printed, so a
+  // prompt wider than the pane still reads as one prompt line — the detectors
+  // judge a screen by its last line, which would otherwise be a wrapped tail.
+  // Untrimmed until joined: a wrap can fall on a space.
   const lines: string[] = [];
   for (let y = start; y < end; y++) {
-    lines.push(buf.getLine(y)?.translateToString(true) ?? "");
+    const line = buf.getLine(y);
+    const text = line?.translateToString(false) ?? "";
+    if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+    else lines.push(text);
   }
-  return lines.join("\n");
+  return lines.map((line) => line.trimEnd()).join("\n");
 }
 
 /** The visible screen reduced to what only real work could have changed. */

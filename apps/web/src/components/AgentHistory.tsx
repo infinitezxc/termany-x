@@ -1,11 +1,19 @@
 import { textInputProps } from "../textInputProps";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { activeHtab, agentSessionPanes, findLeaf, focusedCwdSession, remoteLeafFor, useStore } from "../state/store";
-import { paneHasShell, queueCommand, queueCommandWhenShellReady, terminalSessionId } from "../terminal/manager";
+import {
+  activeAgentKind,
+  agentActivitySnapshot,
+  paneHasShell,
+  queueCommand,
+  queueCommandWhenShellReady,
+  subscribeAgentActivity,
+  terminalSessionId,
+} from "../terminal/manager";
 import { AgentIcon, HistoryIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -334,8 +342,25 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
       ?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  // Conversations already hosted by an open pane (registered on resume).
-  const openPanes = useMemo(() => agentSessionPanes(workspaces), [workspaces]);
+  // Conversations already hosted by an open pane (registered on resume). The
+  // tag outlives the conversation — the agent may have exited, or the pane
+  // moved on to another agent — so only a pane whose terminal is still inside
+  // that agent counts; otherwise the row resumes normally.
+  const taggedPanes = useMemo(() => agentSessionPanes(workspaces), [workspaces]);
+  const taggedIds = useMemo(() => [...taggedPanes.values()].map((loc) => loc.paneId), [taggedPanes]);
+  const activity = useSyncExternalStore(
+    subscribeAgentActivity,
+    () => agentActivitySnapshot(taggedIds),
+    () => "",
+  );
+  const openPanes = useMemo(
+    () =>
+      new Map(
+        [...taggedPanes].filter(([key, loc]) => activeAgentKind(loc.paneId) === key.slice(0, key.indexOf("|"))),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `activity` is the change signal
+    [taggedPanes, activity],
+  );
 
   /** The history pane, when this view is one and sits in the active tab. */
   const historyLeaf = () => {
