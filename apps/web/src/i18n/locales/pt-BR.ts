@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "dividir abaixo",
 
   "pane.zoomedRestore": "Restaurar painéis divididos",
-  "pane.view.switch": "Trocar visualização",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Arquivos",
   "pane.view.git": "Diff do Git",

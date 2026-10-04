@@ -418,7 +418,6 @@ export default {
   "drag.edge.bottom": "rozdělit dolů",
 
   "pane.zoomedRestore": "Obnovit rozdělené panely",
-  "pane.view.switch": "Přepnout zobrazení",
   "pane.view.terminal": "Terminál",
   "pane.view.files": "Soubory",
   "pane.view.git": "Git diff",

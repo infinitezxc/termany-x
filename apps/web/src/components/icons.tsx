@@ -63,6 +63,7 @@ import {
   UsersRound,
   Wrench,
   X,
+  ArrowRightLeft,
 } from "lucide-react";
 
 // Shared sizing — 16px to match the previous custom glyphs.
@@ -181,6 +182,11 @@ export function SshIcon() {
 /** ⌘ glyph — a runnable action in the command palette. */
 export function CommandIcon() {
   return <Command {...base} />;
+}
+
+/** Two-way arrows — SSH port forwarding. */
+export function PortForwardIcon() {
+  return <ArrowRightLeft {...base} />;
 }
 
 export function WebIcon() {

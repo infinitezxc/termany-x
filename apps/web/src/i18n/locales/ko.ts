@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "아래로 분할",
 
   "pane.zoomedRestore": "분할 창 복원",
-  "pane.view.switch": "보기 전환",
   "pane.view.terminal": "터미널",
   "pane.view.files": "파일",
   "pane.view.git": "Git 변경 내용",

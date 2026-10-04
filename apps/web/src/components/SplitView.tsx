@@ -10,7 +10,6 @@ import {
   activeHtab,
   paneCount,
   remoteSessionFor,
-  SSH_PANE_VIEWS,
   useStore,
   type DropEdge,
   type HTab,
@@ -36,25 +35,19 @@ import {
 import { openExternal } from "../openExternal";
 import { AgentHistory } from "./AgentHistory";
 import { AgentUsage } from "./AgentUsage";
+import { PortForwardDialog } from "./PortForwardDialog";
 import { ProviderPane } from "./ProviderPane";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
-  ActivityIcon,
-  ChartIcon,
-  ChatIcon,
   CheckIcon,
   ChevronIcon,
   CloseIcon,
   ExternalOpenIcon,
-  FilesIcon,
-  GitBranchIcon,
-  HistoryIcon,
   MaximizeIcon,
-  ProviderIcon,
+  PortForwardIcon,
   RestoreIcon,
   SpinnerIcon,
-  TerminalIcon,
   WebIcon,
 } from "./icons";
 import { AgentPane } from "./AgentPane";
@@ -94,18 +87,6 @@ function edgeFor(rect: DOMRect, x: number, y: number): DropEdge {
   const d = { left: rx, right: 1 - rx, top: ry, bottom: 1 - ry };
   return (Object.keys(d) as DropEdge[]).reduce((a, b) => (d[b] < d[a] ? b : a));
 }
-
-const PANE_VIEWS = [
-  { view: "terminal", labelKey: "pane.view.terminal", Icon: TerminalIcon },
-  { view: "files", labelKey: "pane.view.files", Icon: FilesIcon },
-  { view: "git", labelKey: "pane.view.git", Icon: GitBranchIcon },
-  { view: "agent", labelKey: "pane.view.agent", Icon: ChatIcon },
-  { view: "web", labelKey: "pane.view.web", Icon: WebIcon },
-  { view: "monitor", labelKey: "pane.view.monitor", Icon: ActivityIcon },
-  { view: "providers", labelKey: "pane.view.providers", Icon: ProviderIcon },
-  { view: "history", labelKey: "pane.view.history", Icon: HistoryIcon },
-  { view: "usage", labelKey: "pane.view.usage", Icon: ChartIcon },
-] as const;
 
 /** Dismiss-on-outside-click/Escape plus native-view occlusion, shared by the
  *  header's dropdowns. */
@@ -261,53 +242,30 @@ function PaneServedUrls({ leaf }: { leaf: Leaf }) {
   );
 }
 
-/** Header dropdown switching this pane between every available pane view. */
-function PaneViewMenu({ leaf }: { leaf: Leaf }) {
+/** SSH panes only: opens the dialog that maps remote ports to local ones. */
+function PanePortForward({ leaf }: { leaf: Leaf }) {
   const { t } = useI18n();
-  const setPaneView = useStore((s) => s.setPaneView);
-  const railVisibility = useStore((s) => s.railVisibility);
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
-  const { rootRef, panelRef } = usePaneHeadPopover(open, close);
-
-  const current = leaf.view ?? "terminal";
-  const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
-  const availableViews = PANE_VIEWS.filter(
-    (entry) => railVisibility[entry.view] && (!leaf.sshTarget || SSH_PANE_VIEWS.includes(entry.view)),
-  );
+  if (!leaf.sshTarget) return null;
   return (
-    <div className="pane-view-menu" ref={rootRef}>
+    <>
       <button
-        className="pane-btn pane-view-btn"
-        title={withShortcut(t("pane.view.switch"), "togglePaneView")}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((was) => !was)}
+        className="pane-btn"
+        title={t("portForward.open")}
+        aria-label={t("portForward.open")}
+        onClick={() => setOpen(true)}
       >
-        <CurrentIcon />
-        <ChevronIcon dir="down" />
+        <PortForwardIcon />
       </button>
       {open && (
-        <div className="pop-panel pane-view-panel" role="menu" ref={panelRef}>
-          {availableViews.map(({ view, labelKey, Icon }) => (
-            <button
-              key={view}
-              type="button"
-              role="menuitem"
-              className="pop-item"
-              onClick={() => {
-                setPaneView(leaf.id, view);
-                setOpen(false);
-              }}
-            >
-              <Icon />
-              <span className="pop-item-label">{t(labelKey)}</span>
-              {view === current && <CheckIcon />}
-            </button>
-          ))}
-        </div>
+        <PortForwardDialog
+          sessionId={terminalSessionId(leaf.id, leaf.sshTarget)}
+          hostLabel={leaf.sshLabel || leaf.sshTarget}
+          onClose={close}
+        />
       )}
-    </div>
+    </>
   );
 }
 
@@ -394,7 +352,7 @@ function PaneHeader({
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
         {(leaf.view ?? "terminal") === "terminal" && <PaneServedUrls leaf={leaf} />}
-        <PaneViewMenu leaf={leaf} />
+        {(leaf.view ?? "terminal") === "terminal" && <PanePortForward leaf={leaf} />}
         <button
           className="pane-btn"
           title={withShortcut(solo ? "Restore" : "Maximize", "toggleMaximize")}

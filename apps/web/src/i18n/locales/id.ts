@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "belah ke bawah",
 
   "pane.zoomedRestore": "Pulihkan panel yang dibelah",
-  "pane.view.switch": "Ganti tampilan",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Berkas",
   "pane.view.git": "Git diff",

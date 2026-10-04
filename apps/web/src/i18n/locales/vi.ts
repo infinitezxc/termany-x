@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "chia xuống dưới",
 
   "pane.zoomedRestore": "Khôi phục các khung đã chia",
-  "pane.view.switch": "Đổi chế độ xem",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Tệp",
   "pane.view.git": "Git diff",

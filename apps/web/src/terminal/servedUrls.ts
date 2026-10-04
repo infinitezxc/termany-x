@@ -341,43 +341,67 @@ export function servedUrlBrowserUrl(entry: ServedUrl): string {
     : entry.url;
 }
 
-/** Establish an idempotent SSH tunnel and return the local browser URL. */
-export async function forwardServedUrl(sessionId: string, entry: ServedUrl): Promise<string> {
-  if (!entry.remote) return entry.url;
-  if (entry.localPort) return urlThroughLocalPort(entry, entry.localPort);
+/**
+ * Forward a port on the pane's SSH host to local loopback and return the local
+ * port. `localPort` pins the local side (re-mapping an existing forward);
+ * omitted, the server mirrors the remote port when it is free.
+ */
+export async function forwardRemotePort(
+  sessionId: string,
+  remotePort: number,
+  localPort?: number,
+): Promise<number> {
   const response = await fetch(`${apiUrl()}/api/ssh-port-forward`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session: sessionId, remotePort: entry.port }),
+    body: JSON.stringify({ session: sessionId, remotePort, localPort }),
   });
   const payload = await response.json().catch(() => ({}));
-  const localPort = Number(payload?.forward?.localPort);
-  if (!response.ok || !Number.isInteger(localPort)) {
+  const forwarded = Number(payload?.forward?.localPort);
+  if (!response.ok || !Number.isInteger(forwarded)) {
     throw new Error(String(payload?.error ?? `HTTP ${response.status}`));
   }
   let forwards = activeForwards.get(sessionId);
   if (!forwards) activeForwards.set(sessionId, (forwards = new Map()));
-  forwards.set(entry.port, localPort);
+  forwards.set(remotePort, forwarded);
+  // A forward the user set up by hand must not be re-created by the
+  // auto-forwarder once they remove it.
+  let attempted = autoForwardAttempts.get(sessionId);
+  if (!attempted) autoForwardAttempts.set(sessionId, (attempted = new Set()));
+  attempted.add(remotePort);
   refresh(sessionId);
-  return urlThroughLocalPort(entry, localPort);
+  if (pollTimer !== null) void pollPorts();
+  return forwarded;
 }
 
-export async function cancelServedUrlForward(sessionId: string, entry: ServedUrl): Promise<void> {
-  if (!entry.remote || !entry.localPort) return;
+/** Close a forward set up by {@link forwardRemotePort} or the header menu. */
+export async function cancelRemotePortForward(sessionId: string, remotePort: number): Promise<void> {
   const response = await fetch(`${apiUrl()}/api/ssh-port-forward/cancel`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session: sessionId, remotePort: entry.port }),
+    body: JSON.stringify({ session: sessionId, remotePort }),
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(String(payload?.error ?? `HTTP ${response.status}`));
   }
   const forwards = activeForwards.get(sessionId);
-  forwards?.delete(entry.port);
+  forwards?.delete(remotePort);
   if (!forwards?.size) activeForwards.delete(sessionId);
   let attempted = autoForwardAttempts.get(sessionId);
   if (!attempted) autoForwardAttempts.set(sessionId, (attempted = new Set()));
-  attempted.add(entry.port);
+  attempted.add(remotePort);
   refresh(sessionId);
+}
+
+/** Establish an idempotent SSH tunnel and return the local browser URL. */
+export async function forwardServedUrl(sessionId: string, entry: ServedUrl): Promise<string> {
+  if (!entry.remote) return entry.url;
+  if (entry.localPort) return urlThroughLocalPort(entry, entry.localPort);
+  return urlThroughLocalPort(entry, await forwardRemotePort(sessionId, entry.port));
+}
+
+export async function cancelServedUrlForward(sessionId: string, entry: ServedUrl): Promise<void> {
+  if (!entry.remote || !entry.localPort) return;
+  await cancelRemotePortForward(sessionId, entry.port);
 }

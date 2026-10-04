@@ -419,7 +419,6 @@ export default {
   "drag.edge.bottom": "unten teilen",
 
   "pane.zoomedRestore": "Geteilte Bereiche wiederherstellen",
-  "pane.view.switch": "Ansicht wechseln",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Dateien",
   "pane.view.git": "Git-Diff",

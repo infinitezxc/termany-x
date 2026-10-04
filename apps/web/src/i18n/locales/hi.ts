@@ -418,7 +418,6 @@ export default {
   "drag.edge.bottom": "नीचे बाँटें",
 
   "pane.zoomedRestore": "बँटे हुए पेन बहाल करें",
-  "pane.view.switch": "व्यू बदलें",
   "pane.view.terminal": "टर्मिनल",
   "pane.view.files": "फ़ाइलें",
   "pane.view.git": "Git डिफ़",

@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "aşağı böl",
 
   "pane.zoomedRestore": "Bölünmüş bölmeleri geri yükle",
-  "pane.view.switch": "Görünümü değiştir",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Dosyalar",
   "pane.view.git": "Git farkı",

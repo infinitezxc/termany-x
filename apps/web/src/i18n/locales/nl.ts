@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "onder splitsen",
 
   "pane.zoomedRestore": "Gesplitste deelvensters herstellen",
-  "pane.view.switch": "Weergave wisselen",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Bestanden",
   "pane.view.git": "Git-diff",

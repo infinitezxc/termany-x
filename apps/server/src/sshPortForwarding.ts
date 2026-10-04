@@ -186,24 +186,71 @@ export class SshPortForwarding {
     return value;
   }
 
-  async forward(sessionId: string, remoteValue: unknown): Promise<SshPortForward> {
+  /**
+   * Forward a remote port to local loopback. Without `localValue` the local
+   * side mirrors the remote port when free (any free port otherwise); with it,
+   * that exact port is bound or the request fails.
+   */
+  async forward(
+    sessionId: string,
+    remoteValue: unknown,
+    localValue?: unknown,
+  ): Promise<SshPortForward> {
     const remotePort = validPort(remoteValue);
     const session = this.sessions.get(sessionId);
     if (!session || remotePort === null) {
       throw new Error("SSH session and remote port are required");
     }
+    const hasLocal = localValue !== undefined && localValue !== null && localValue !== "";
+    const explicit = hasLocal ? validPort(localValue) : null;
+    if (hasLocal && explicit === null) {
+      throw new Error("Local port must be between 1 and 65535");
+    }
+    await session.pending.get(remotePort)?.catch(() => {});
     const existing = session.forwards.get(remotePort);
-    if (existing) return existing;
-    const pending = session.pending.get(remotePort);
-    if (pending) return pending;
+    if (existing && (explicit === null || existing.localPort === explicit)) return existing;
+    if (explicit !== null) {
+      for (const forward of session.forwards.values()) {
+        if (forward.localPort === explicit && forward.remotePort !== remotePort) {
+          throw new Error(`Local port ${explicit} already forwards remote port ${forward.remotePort}`);
+        }
+      }
+    }
 
-    const task = this.createForward(session, remotePort);
+    const task = (async () => {
+      // Re-mapping an existing remote port: release the old local side first.
+      if (existing) {
+        await this.runForward(session, existing.localPort, remotePort, "cancel");
+        session.forwards.delete(remotePort);
+      }
+      return explicit === null
+        ? this.createForward(session, remotePort)
+        : this.createExactForward(session, remotePort, explicit);
+    })();
     session.pending.set(remotePort, task);
     try {
       return await task;
     } finally {
       if (session.pending.get(remotePort) === task) session.pending.delete(remotePort);
     }
+  }
+
+  private async createExactForward(
+    session: SshPortSession,
+    remotePort: number,
+    localPort: number,
+  ): Promise<SshPortForward> {
+    if ((await availableLocalPort(localPort)) !== localPort) {
+      throw new Error(`Local port ${localPort} is already in use`);
+    }
+    try {
+      await this.runForward(session, localPort, remotePort, "forward");
+    } catch (error) {
+      throw new Error(messageFrom(error) || "Port forwarding failed");
+    }
+    const result = { remotePort, localPort };
+    session.forwards.set(remotePort, result);
+    return result;
   }
 
   private async createForward(

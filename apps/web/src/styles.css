@@ -4289,6 +4289,19 @@ html.tauri #root {
 .ssh-test-status.hostKey { color: var(--warning, #c58a24); }
 .ssh-test-status.timeout, .ssh-test-status.failed { color: var(--danger, #dc5b5b); }
 @media (max-width: 600px) { .ssh-manager-actions { align-items: stretch; flex-direction: column; } .ssh-manager-action-buttons { justify-content: flex-end; flex-wrap: wrap; } }
+.port-forward-form { display: flex; align-items: flex-end; gap: 10px; padding: 0 24px 16px; }
+.port-forward-form label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; color: var(--fg-dim); font-size: 12px; }
+.port-forward-form input { height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--fg); font: inherit; font-family: Menlo, monospace; font-size: 13px; outline: none; }
+.port-forward-form input:focus { border-color: var(--accent); }
+.port-forward-arrow { height: 36px; display: flex; align-items: center; color: var(--fg-dim); }
+.port-forward-form .ssh-manager-add:disabled { opacity: .5; cursor: default; }
+.port-forward-dialog .ssh-manager-row { min-height: 52px; }
+.port-forward-dialog .ssh-manager-row strong { font-family: Menlo, monospace; font-weight: 400; }
+.port-forward-dialog .ssh-manager-row > button:disabled { opacity: .5; cursor: default; }
+.port-forward-detected { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -12px 24px 20px; color: var(--fg-dim); font-size: 12px; }
+.port-forward-detected button { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--fg); font: inherit; font-family: Menlo, monospace; font-size: 12px; cursor: pointer; }
+.port-forward-detected button:hover { background: var(--bg-3); }
+.port-forward-detected svg { width: 12px; height: 12px; }
 .ssh-manager-error { margin: 8px 24px 0; color: var(--danger, #dc5b5b); font-size: 11px; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .ssh-manager-backdrop { padding: 8px; } .ssh-manager-dialog { width: 100%; max-height: calc(100vh - 16px); } .ssh-manager-header { padding: 16px; } .ssh-manager-toolbar { padding-inline: 12px; } .ssh-manager-list { margin-inline: 12px; } .ssh-profile-form { padding-inline: 16px; } }
 .ssh-menu-empty {
@@ -4664,20 +4677,6 @@ html.tauri #root {
   position: relative;
   display: flex;
   z-index: 7;
-}
-.pane-view-btn {
-  width: auto;
-  gap: 2px;
-  padding: 0 3px 0 5px;
-}
-.pane-view-btn > svg:first-child {
-  width: 14px;
-  height: 14px;
-}
-.pane-view-btn > svg:last-child {
-  width: 10px;
-  height: 10px;
-  opacity: 0.7;
 }
 /* "Serving on :3035" — accented so a live dev server reads as a live thing,
    not as one more grey header control. */

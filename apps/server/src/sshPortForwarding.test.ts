@@ -5,6 +5,7 @@ import {
   parseRemoteListeningPorts,
   sshForwardControlArgs,
   sshMasterArgs,
+  SshPortForwarding,
 } from "./sshPortForwarding.js";
 
 test("parses listening ports from Linux ss", () => {
@@ -77,4 +78,35 @@ test("the PTY server exposes remote discovery and forward lifecycle APIs", () =>
   assert.match(server, /sshPortForwarding\.listRemotePorts/);
   assert.match(server, /\/api\/ssh-port-forward/);
   assert.match(server, /sshPortForwarding\.remove/);
+});
+
+/** A registered session whose ssh control calls are recorded, not run. */
+function stubbedForwarding() {
+  const forwarding = new SshPortForwarding();
+  forwarding.register("pane", ["dev@example.com"], "/tmp/control");
+  const calls: string[] = [];
+  (forwarding as unknown as { runForward: unknown }).runForward = async (
+    _session: unknown,
+    localPort: number,
+    remotePort: number,
+    operation: string,
+  ) => {
+    calls.push(`${operation} ${localPort}:${remotePort}`);
+  };
+  return { forwarding, calls };
+}
+
+test("an explicit local port is bound exactly, and re-mapping releases the old one", async () => {
+  const { forwarding, calls } = stubbedForwarding();
+  assert.deepEqual(await forwarding.forward("pane", 3000, 18431), { remotePort: 3000, localPort: 18431 });
+  assert.deepEqual(await forwarding.forward("pane", 3000, 18432), { remotePort: 3000, localPort: 18432 });
+  assert.deepEqual(calls, ["forward 18431:3000", "cancel 18431:3000", "forward 18432:3000"]);
+  assert.deepEqual(forwarding.snapshot("pane"), [{ remotePort: 3000, localPort: 18432 }]);
+});
+
+test("rejects invalid local ports and ports another forward already owns", async () => {
+  const { forwarding } = stubbedForwarding();
+  await assert.rejects(forwarding.forward("pane", 3000, 70000), /between 1 and 65535/);
+  await forwarding.forward("pane", 3000, 18433);
+  await assert.rejects(forwarding.forward("pane", 4000, 18433), /already forwards remote port 3000/);
 });

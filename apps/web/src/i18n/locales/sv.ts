@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "dela nedåt",
 
   "pane.zoomedRestore": "Återställ delade paneler",
-  "pane.view.switch": "Byt vy",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Filer",
   "pane.view.git": "Git-diff",

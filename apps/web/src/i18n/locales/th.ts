@@ -418,7 +418,6 @@ export default {
   "drag.edge.bottom": "แบ่งลงข้างล่าง",
 
   "pane.zoomedRestore": "คืนค่าบานหน้าต่างที่แบ่งไว้",
-  "pane.view.switch": "สลับมุมมอง",
   "pane.view.terminal": "เทอร์มินัล",
   "pane.view.files": "ไฟล์",
   "pane.view.git": "Git diff",

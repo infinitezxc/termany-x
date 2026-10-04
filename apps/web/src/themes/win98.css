@@ -247,7 +247,6 @@ html[data-theme="win98"] .pane-btn:hover {
 html[data-theme="win98"] .pane-btn:active {
   box-shadow: var(--w98-down);
 }
-html[data-theme="win98"] .pane-view-btn,
 html[data-theme="win98"] .pane-url-btn {
   width: auto;
   color: #000;

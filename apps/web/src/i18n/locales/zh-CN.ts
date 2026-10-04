@@ -416,7 +416,6 @@ export default {
   "drag.edge.bottom": "拆分到下方",
 
   "pane.zoomedRestore": "还原所有窗格",
-  "pane.view.switch": "切换视图",
   "pane.view.terminal": "终端",
   "pane.view.files": "文件",
   "pane.view.git": "Git 差异",
@@ -428,6 +427,15 @@ export default {
   "pane.view.providers": "模型网关",
   "pane.openInBrowser": "在浏览器中打开 {url}",
   "pane.servedUrls": "打开此窗格监听的端口",
+  "portForward.open": "端口映射",
+  "portForward.title": "端口映射 — {host}",
+  "portForward.remotePort": "远程端口",
+  "portForward.localPort": "本地端口",
+  "portForward.localAuto": "与远程相同",
+  "portForward.remove": "停止映射",
+  "portForward.empty": "尚未映射任何端口。",
+  "portForward.detected": "主机正在监听：",
+  "portForward.forwardPort": "映射端口 {port}",
 
   "kb.title": "快捷键",
   "kb.resetAll": "全部重置",

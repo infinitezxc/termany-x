@@ -418,7 +418,6 @@ export default {
   "drag.edge.bottom": "podziel w dół",
 
   "pane.zoomedRestore": "Przywróć podzielone panele",
-  "pane.view.switch": "Zmień widok",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Pliki",
   "pane.view.git": "Git diff",

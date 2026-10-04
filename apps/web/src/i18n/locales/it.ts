@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "dividi in basso",
 
   "pane.zoomedRestore": "Ripristina i riquadri divisi",
-  "pane.view.switch": "Cambia vista",
   "pane.view.terminal": "Terminale",
   "pane.view.files": "File",
   "pane.view.git": "Diff Git",

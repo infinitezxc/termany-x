@@ -418,7 +418,6 @@ export default {
   "drag.edge.bottom": "розділити вниз",
 
   "pane.zoomedRestore": "Відновити розділені панелі",
-  "pane.view.switch": "Змінити вигляд",
   "pane.view.terminal": "Термінал",
   "pane.view.files": "Файли",
   "pane.view.git": "Git diff",

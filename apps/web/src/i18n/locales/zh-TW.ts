@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "向下分割",
 
   "pane.zoomedRestore": "還原分割窗格",
-  "pane.view.switch": "切換檢視",
   "pane.view.terminal": "終端機",
   "pane.view.files": "檔案",
   "pane.view.git": "Git 差異",
@@ -429,6 +428,15 @@ export default {
   "pane.view.providers": "模型閘道",
   "pane.openInBrowser": "在瀏覽器中開啟 {url}",
   "pane.servedUrls": "開啟這個窗格提供服務的連接埠",
+  "portForward.open": "連接埠對應",
+  "portForward.title": "連接埠對應 — {host}",
+  "portForward.remotePort": "遠端連接埠",
+  "portForward.localPort": "本機連接埠",
+  "portForward.localAuto": "與遠端相同",
+  "portForward.remove": "停止對應",
+  "portForward.empty": "尚未對應任何連接埠。",
+  "portForward.detected": "主機正在監聽：",
+  "portForward.forwardPort": "對應連接埠 {port}",
 
   "kb.title": "鍵盤快速鍵",
   "kb.resetAll": "全部重設",

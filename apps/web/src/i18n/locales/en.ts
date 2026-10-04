@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "split bottom",
 
   "pane.zoomedRestore": "Restore split panes",
-  "pane.view.switch": "Switch view",
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Files",
   "pane.view.git": "Git diff",
@@ -429,6 +428,15 @@ export default {
   "pane.view.providers": "Model gateway",
   "pane.openInBrowser": "Open {url} in browser",
   "pane.servedUrls": "Open a port this pane is serving",
+  "portForward.open": "Port forwarding",
+  "portForward.title": "Port forwarding — {host}",
+  "portForward.remotePort": "Remote port",
+  "portForward.localPort": "Local port",
+  "portForward.localAuto": "Same as remote",
+  "portForward.remove": "Stop forwarding",
+  "portForward.empty": "No ports forwarded yet.",
+  "portForward.detected": "Listening on host:",
+  "portForward.forwardPort": "Forward port {port}",
 
   "kb.title": "KEYBOARD SHORTCUTS",
   "kb.resetAll": "Reset all",

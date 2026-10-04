@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "下に分割",
 
   "pane.zoomedRestore": "分割ペインを元に戻す",
-  "pane.view.switch": "ビューを切り替え",
   "pane.view.terminal": "ターミナル",
   "pane.view.files": "ファイル",
   "pane.view.git": "Git 差分",

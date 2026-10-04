@@ -1,7 +1,7 @@
 import type { RailVisibility } from "../rail-config";
 import type { PaneView } from "./store";
 
-/** Same order as the pane view menu. */
+/** Order the togglePaneView shortcut cycles through. */
 export const CYCLABLE_PANE_VIEWS = [
   "terminal",
   "files",

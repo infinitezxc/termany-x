@@ -417,7 +417,6 @@ export default {
   "drag.edge.bottom": "разделить снизу",
 
   "pane.zoomedRestore": "Вернуть разделённые панели",
-  "pane.view.switch": "Сменить вид",
   "pane.view.terminal": "Терминал",
   "pane.view.files": "Файлы",
   "pane.view.git": "Git diff",

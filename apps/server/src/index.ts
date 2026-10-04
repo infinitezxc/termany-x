@@ -1693,7 +1693,7 @@ const http = createServer((req, res) => {
       .then(async (body) => {
         const sessionId = typeof body?.session === "string" ? body.session : "";
         try {
-          const forward = await sshPortForwarding.forward(sessionId, body?.remotePort);
+          const forward = await sshPortForwarding.forward(sessionId, body?.remotePort, body?.localPort);
           json(200, { ok: true, forward });
         } catch (error) {
           json(400, { error: error instanceof Error ? error.message : String(error) });
