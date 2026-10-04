@@ -31,6 +31,7 @@ import {
   MAX_AUTO_RESTARTS,
   RESTART_HEALTHY_MS,
   shellExitDisposition,
+  sshExitDisposition,
 } from "./shellExit";
 import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
@@ -1621,7 +1622,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         session.ended = true;
         session.connectionState = "disconnected";
         notifyConnectionStatus();
-        if (!reason) {
+        // Only a remote shell that ended on its own hands the pane back to a
+        // local shell; a dropped link keeps the host and waits for Enter.
+        if (!reason && sshExitDisposition(exit) === "go-local") {
           window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId } }));
           return;
         }

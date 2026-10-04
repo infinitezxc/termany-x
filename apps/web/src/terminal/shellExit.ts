@@ -50,3 +50,31 @@ export function shellExitDisposition(
   if (aliveMs <= RESTART_HEALTHY_MS) return "restart";
   return "close-pane";
 }
+
+/**
+ * OpenSSH's own exit status for "the connection failed or dropped" — distinct
+ * from the remote shell's status, which ssh otherwise passes straight through.
+ */
+const SSH_CONNECTION_LOST = 255;
+
+export type SshExitDisposition = "go-local" | "reconnect";
+
+/**
+ * Decide what an SSH pane does when its `ssh` process ends.
+ *
+ * The remote shell ending on its own (`exit`, Ctrl+D) means the user is done
+ * with the host, so the pane drops back to a local shell. A dropped link — Wi-Fi
+ * change, sleep, the host closing it — must NOT do that: every pane on that
+ * host dies at once, and silently turning them all into local shells loses the
+ * whole remote layout. Those stay SSH panes and wait for Enter to reconnect.
+ *
+ * The remote status is passed through by ssh, so — as with local shells (see
+ * `shellExitDisposition`) — any ordinary code is a deliberate exit; only 255,
+ * a signal, or no exit report at all points at the connection.
+ */
+export function sshExitDisposition(exit: ShellExit | undefined): SshExitDisposition {
+  if (!exit) return "reconnect";
+  if (exit.signal) return "reconnect";
+  if (exit.exitCode === SSH_CONNECTION_LOST) return "reconnect";
+  return "go-local";
+}

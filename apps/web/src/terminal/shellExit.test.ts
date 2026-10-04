@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SHELL_EXIT_CLOSE_CODE, encodeShellExit, parseShellExit } from "@termany/core";
-import { RESTART_HEALTHY_MS, shellExitDisposition } from "./shellExit";
+import { RESTART_HEALTHY_MS, shellExitDisposition, sshExitDisposition } from "./shellExit";
 
 const LONG_LIVED = RESTART_HEALTHY_MS + 1;
 const JUST_SPAWNED = 120;
@@ -98,4 +98,17 @@ test("a decoded close frame drives the disposition end to end", () => {
   // apps/server/tests/shellExit.test.ts) — indistinguishable from a graceful
   // exit unless the signal survives the trip.
   assert.equal(shellExitDisposition(decode(0, 9), LONG_LIVED), "restart");
+});
+
+test("an SSH pane whose remote shell exited goes back to a local shell", () => {
+  assert.equal(sshExitDisposition({ exitCode: 0 }), "go-local");
+  // Ctrl+D after a failed remote command: ssh passes the shell's status through.
+  assert.equal(sshExitDisposition({ exitCode: 1 }), "go-local");
+});
+
+test("an SSH pane whose connection dropped stays remote and waits to reconnect", () => {
+  // OpenSSH exits 255 when the link fails or drops.
+  assert.equal(sshExitDisposition({ exitCode: 255 }), "reconnect");
+  assert.equal(sshExitDisposition({ exitCode: 0, signal: 9 }), "reconnect");
+  assert.equal(sshExitDisposition(undefined), "reconnect");
 });
