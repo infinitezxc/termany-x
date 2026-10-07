@@ -1445,10 +1445,15 @@ const http = createServer((req, res) => {
       // A NUL byte anywhere in the sample means "not text" — same heuristic
       // git/grep use to skip binary files.
       if (buf.includes(0)) {
-        json(200, { binary: true, size: stat.size });
+        json(200, { binary: true, size: stat.size, mtimeMs: stat.mtimeMs });
         return;
       }
-      json(200, { content: buf.toString("utf8"), truncated: stat.size > FILE_READ_CAP, size: stat.size });
+      json(200, {
+        content: buf.toString("utf8"),
+        truncated: stat.size > FILE_READ_CAP,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+      });
     })().catch(fail);
     return;
   }

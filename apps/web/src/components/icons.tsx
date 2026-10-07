@@ -64,6 +64,13 @@ import {
   Wrench,
   X,
   ArrowRightLeft,
+  ArrowDown,
+  ArrowUp,
+  CaseSensitive,
+  Regex,
+  Replace,
+  ReplaceAll,
+  WholeWord,
 } from "lucide-react";
 
 // Shared sizing — 16px to match the previous custom glyphs.
@@ -356,4 +363,30 @@ export function RestoreExpandedIcon() {
 /** Open folder glyph — reveal a file or directory in Finder/Explorer. */
 export function RevealFolderIcon() {
   return <FolderOpen {...base} />;
+}
+
+/** Editor find/replace widget — the same glyphs VS Code's find widget uses. */
+export function MatchCaseIcon() {
+  return <CaseSensitive {...base} />;
+}
+
+export function WholeWordIcon() {
+  return <WholeWord {...base} />;
+}
+
+export function RegexIcon() {
+  return <Regex {...base} />;
+}
+
+export function ReplaceIcon() {
+  return <Replace {...base} />;
+}
+
+export function ReplaceAllIcon() {
+  return <ReplaceAll {...base} />;
+}
+
+export function ArrowIcon({ dir }: { dir: "up" | "down" }) {
+  const C = dir === "up" ? ArrowUp : ArrowDown;
+  return <C {...base} />;
 }

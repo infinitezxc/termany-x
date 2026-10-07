@@ -1,4 +1,6 @@
 import { textInputProps } from "../textInputProps";
+import { findNext, findPrevious, openSearchPanel } from "@codemirror/search";
+import { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
@@ -676,6 +678,35 @@ interface Selected {
   content?: string;
   truncated?: boolean;
   error?: string;
+  /** Modified time as of the read — local files only; how a change on disk is spotted. */
+  mtimeMs?: number;
+  /** When this copy was read; a new value pushes it into the open editor. */
+  loadedAt?: number;
+}
+
+/** Read an open file for its tab. Never rejects — a failure is an error tab. */
+async function readFile(path: string, remote?: string): Promise<Selected> {
+  try {
+    const res = await fetch(fsUrl("read", { path }, remote));
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+    const loadedAt = Date.now();
+    return body.binary
+      ? { path, status: "binary", mtimeMs: body.mtimeMs, loadedAt }
+      : { path, status: "text", content: body.content, truncated: !!body.truncated, mtimeMs: body.mtimeMs, loadedAt };
+  } catch (e) {
+    return { path, status: "error", error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+type FindDir = "open" | "next" | "prev";
+const FILE_FIND_EVENT = "termany:file-find";
+
+/** Route the find shortcuts (⌘F, ⌘G, ⇧⌘G) to a files-view pane's open file,
+ *  which searches with its editor's own find panel instead of the terminal
+ *  find bar. */
+export function requestFileFind(paneId: string, dir: FindDir) {
+  window.dispatchEvent(new CustomEvent(FILE_FIND_EVENT, { detail: { paneId, dir } }));
 }
 
 /** The open files, as tabs across the top of the preview. A tab with unsaved
@@ -762,20 +793,27 @@ function FileTabStrip({
  * instance rather than stale state.
  */
 function FilePreview({
+  paneId,
   selected,
   visible,
+  dirty,
   tabStrip,
   remote,
   dark,
   treeCollapsed,
   onToggleTree,
   onDirtyChange,
+  onReload,
   onClose,
   closeArmed,
 }: {
+  /** The files-view pane this sits in — the target of its find shortcuts. */
+  paneId: string;
   selected: Selected;
   /** The active tab, and the preview column is showing. */
   visible: boolean;
+  /** Has unsaved edits. */
+  dirty: boolean;
   /** Shared tab strip, in the header where the file name would go. */
   tabStrip: React.ReactNode;
   /** SSH session the file lives on — no Finder to reveal it in. */
@@ -784,6 +822,8 @@ function FilePreview({
   treeCollapsed: boolean;
   onToggleTree: () => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  /** Re-read the file from disk; `force` throws away unsaved edits. */
+  onReload: (force: boolean) => void;
   /** Close every tab. Armed = asked once already, because some have unsaved edits. */
   onClose: () => void;
   closeArmed: boolean;
@@ -799,6 +839,51 @@ function FilePreview({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [reloadArmed, setReloadArmed] = useState(false);
+  useEffect(() => {
+    if (!dirty) setReloadArmed(false);
+  }, [dirty]);
+
+  const editorView = () => {
+    const el = panelRef.current?.querySelector<HTMLElement>(".cm-editor");
+    return el ? EditorView.findFromDOM(el) : null;
+  };
+
+  // Find runs in the editor's own search panel. A rendered view (Markdown,
+  // CSV, …) has nothing to search in, so it flips to the source first and
+  // runs the find once the editor is there.
+  const pendingFind = useRef<FindDir | null>(null);
+  const runFind = (dir: FindDir) => {
+    const view = editorView();
+    if (!view) return;
+    if (dir === "open") openSearchPanel(view);
+    else if (dir === "next") findNext(view);
+    else findPrevious(view);
+  };
+  const runFindRef = useRef(runFind);
+  runFindRef.current = runFind;
+  const showsRendered =
+    selected.status === "text" && !selected.truncated && !showSource && hasRenderedView(selected.path);
+  useEffect(() => {
+    if (!visible || selected.status !== "text") return;
+    const onFind = (event: Event) => {
+      const { paneId: target, dir } = (event as CustomEvent<{ paneId: string; dir: FindDir }>).detail;
+      if (target !== paneId) return;
+      if (showsRendered) {
+        pendingFind.current = dir;
+        setShowSource(true);
+      } else {
+        runFindRef.current(dir);
+      }
+    };
+    window.addEventListener(FILE_FIND_EVENT, onFind);
+    return () => window.removeEventListener(FILE_FIND_EVENT, onFind);
+  }, [visible, paneId, selected.status, showsRendered]);
+  useEffect(() => {
+    const dir = pendingFind.current;
+    pendingFind.current = null;
+    if (dir && showSource) runFindRef.current(dir);
+  }, [showSource]);
 
   // Reveal (not open) — opening a file with the OS default app needs a Tauri
   // permission (opener:allow-open-path) this app doesn't grant, and revealing
@@ -819,7 +904,8 @@ function FilePreview({
     })
       .then(async (res) => {
         if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error || `HTTP ${res.status}`);
-        setDirty(false);
+        // Typing that landed while the save was in flight is still unsaved.
+        if (editorView()?.state.doc.toString() === text) setDirty(false);
       })
       .catch((e) => setSaveError(e instanceof Error ? e.message : String(e)));
   }, [remote, setDirty]);
@@ -839,6 +925,21 @@ function FilePreview({
           {showSource ? <PreviewIcon /> : <SourceIcon />}
         </button>
       )}
+      <button
+        className={`pane-btn ${reloadArmed ? "danger" : ""}`}
+        title={reloadArmed ? "Unsaved changes — click again to discard them and reload" : "Reload from disk"}
+        onClick={() => {
+          if (dirty && !reloadArmed) {
+            setReloadArmed(true);
+            return;
+          }
+          setReloadArmed(false);
+          onReload(true);
+        }}
+        onMouseLeave={() => setReloadArmed(false)}
+      >
+        <RefreshIcon />
+      </button>
       {!remote && (
         <button className="pane-btn" title="Reveal in Finder" onClick={() => revealInFinder(selected.path)}>
           <RevealFolderIcon />
@@ -864,7 +965,12 @@ function FilePreview({
 
   if (selected.status === "binary") {
     const mediaKind = mediaKindForPath(selected.path);
-    const mediaSrc = fsUrl("media", { path: selected.path }, remote);
+    // The modified time busts the cache, so a reload shows the new bytes.
+    const mediaSrc = fsUrl(
+      "media",
+      selected.mtimeMs ? { path: selected.path, v: String(selected.mtimeMs) } : { path: selected.path },
+      remote,
+    );
     if (mediaKind) {
       return (
         <div className="file-preview-panel" ref={panelRef} hidden={!visible}>
@@ -953,6 +1059,7 @@ function FilePreview({
         <CodeEditor
           path={selected.path}
           content={selected.content ?? ""}
+          loadedAt={selected.loadedAt}
           dark={dark}
           readOnly={!!selected.truncated}
           onDirtyChange={setDirty}
@@ -1344,23 +1451,37 @@ function FileTreeView({
       stateCache.set(cacheKey, { ...cached, tabs: update(cached.tabs) });
       setTabs(update);
     };
-    for (const path of loadingPaths.split("\0")) {
-      fetch(fsUrl("read", { path }, remote))
-        .then(async (res) => {
-          const body = await res.json();
-          if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-          land(
-            body.binary
-              ? { path, status: "binary" }
-              : { path, status: "text", content: body.content, truncated: !!body.truncated },
-          );
-        })
-        .catch((e) => land({ path, status: "error", error: e instanceof Error ? e.message : String(e) }));
-    }
+    for (const path of loadingPaths.split("\0")) void readFile(path, remote).then(land);
     return () => {
       live = false;
     };
   }, [loadingPaths, cacheKey, remote]);
+
+  // Re-read an open file in place. Unlike opening it, the tab never drops
+  // back to "loading", so its editor (undo, scroll, cursor) stays mounted.
+  // Unsaved edits are left alone unless `force` — checked again once the
+  // read lands, in case typing started meanwhile.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const dirtyRef = useRef(dirtyPaths);
+  dirtyRef.current = dirtyPaths;
+  const reloadTab = useCallback((path: string, force = false) => {
+    if (!force && dirtyRef.current.has(path)) return;
+    void readFile(path, remote).then((result) => {
+      // A background check that fails (the file mid-rewrite, say) keeps what's shown.
+      if (!force && (dirtyRef.current.has(path) || result.status === "error")) return;
+      const update = (list: Selected[]) =>
+        list.map((t) => {
+          if (t.path !== path || t.status === "loading") return t;
+          // Nothing changed — keep the tab as is rather than re-render it.
+          if (!force && t.status === result.status && t.content === result.content && t.mtimeMs === result.mtimeMs) return t;
+          return result;
+        });
+      const cached = stateCache.get(cacheKey) ?? emptyFileTreeState();
+      stateCache.set(cacheKey, { ...cached, tabs: update(cached.tabs) });
+      setTabs(update);
+    });
+  }, [cacheKey, remote]);
 
   const toggleDir = (path: string) => {
     const opening = !expanded.has(path);
@@ -1470,6 +1591,7 @@ function FileTreeView({
     if (root) loadDir(root);
     else resolveRootFromSession();
     expanded.forEach(loadDir);
+    if (activePath) reloadTab(activePath);
   };
 
   // One button, two jobs: collapse everything (remembering what was open),
@@ -1607,6 +1729,40 @@ function FileTreeView({
     </>
   );
 
+  // Keep the file on screen current with the disk: check it whenever it's
+  // shown (tab switch, the window coming back to the front) and, for a local
+  // file, every couple of seconds by its modified time — a cheap stat. A
+  // remote file costs a full read over SSH, so it isn't polled. Unsaved edits
+  // are never overwritten by this.
+  const previewShown = !!activePath && !(narrow && narrowTree);
+  useEffect(() => {
+    if (!previewShown || !activePath) return;
+    const path = activePath;
+    const check = () => {
+      if (document.hidden) return;
+      const tab = tabsRef.current.find((t) => t.path === path);
+      if (!tab || tab.status === "loading" || dirtyRef.current.has(path)) return;
+      if (remote) {
+        reloadTab(path);
+        return;
+      }
+      fetch(fsUrl("stat", { path }))
+        .then((res) => (res.ok ? (res.json() as Promise<{ mtimeMs: number }>) : null))
+        .then((st) => {
+          const current = tabsRef.current.find((t) => t.path === path);
+          if (st && current && current.status !== "loading" && st.mtimeMs !== current.mtimeMs) reloadTab(path);
+        })
+        .catch(() => {});
+    };
+    check();
+    window.addEventListener("focus", check);
+    const timer = remote ? undefined : window.setInterval(check, 2000);
+    return () => {
+      window.removeEventListener("focus", check);
+      window.clearInterval(timer);
+    };
+  }, [previewShown, activePath, remote, reloadTab]);
+
   // Nothing open: just the tree, full width.
   if (!tabs.length) return <div className="file-tree">{treeUi}</div>;
 
@@ -1637,6 +1793,7 @@ function FileTreeView({
   // Narrow: one column, either the tree or the open files — the previews
   // stay mounted behind the tree so their edits survive the trip.
   const treeOnly = narrow && narrowTree;
+
   const collapsed = treeCollapsed || narrow;
   const tabStrip = (
     <FileTabStrip
@@ -1658,14 +1815,17 @@ function FileTreeView({
       {tabs.map((tab) => (
         <FilePreview
           key={tab.path}
+          paneId={sessionId}
           selected={tab}
           visible={tab.path === selected?.path && !treeOnly}
+          dirty={dirtyPaths.has(tab.path)}
           tabStrip={tabStrip}
           remote={remote}
           dark={dark}
           treeCollapsed={collapsed}
           onToggleTree={() => (narrow ? setNarrowTree(true) : setTreeCollapsed((v) => !v))}
           onDirtyChange={markDirty}
+          onReload={(force) => reloadTab(tab.path, force)}
           onClose={closePreview}
           closeArmed={closeAllArmed}
         />

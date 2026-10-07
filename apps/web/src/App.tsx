@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FindBar } from "./components/FindBar";
+import { requestFileFind } from "./components/FileTree";
 import { GitDiff } from "./components/GitDiff";
 import { HTabBar } from "./components/HTabBar";
 import { AgentWorkspace } from "./components/AgentWorkspace";
@@ -16,7 +17,7 @@ import { WindowControls } from "./components/WindowControls";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
-import { activeHtab, activeNode, focusedHostSession, leafIds, useStore } from "./state/store";
+import { activeHtab, activeNode, findLeaf, focusedHostSession, leafIds, useStore } from "./state/store";
 import { openNewWindow } from "./state/windows";
 import {
   adjustTerminalFontSize,
@@ -282,14 +283,21 @@ export function App() {
       search: () => {
         if (appTabRef.current === "pages") setSearchOpen((o) => !o);
       },
-      find: () => setFindOpen(true),
+      // A pane showing its file tree searches the open file instead.
+      find: (s) => {
+        const h = activeHtab(s);
+        if (h && findLeaf(h.layout, h.focused)?.view === "files") requestFileFind(h.focused, "open");
+        else setFindOpen(true);
+      },
       findNext: (s) => {
         const h = activeHtab(s);
-        if (h) repeatFind(h.focused, "next");
+        if (h && findLeaf(h.layout, h.focused)?.view === "files") requestFileFind(h.focused, "next");
+        else if (h) repeatFind(h.focused, "next");
       },
       findPrev: (s) => {
         const h = activeHtab(s);
-        if (h) repeatFind(h.focused, "prev");
+        if (h && findLeaf(h.layout, h.focused)?.view === "files") requestFileFind(h.focused, "prev");
+        else if (h) repeatFind(h.focused, "prev");
       },
       scrollTop: (s) => {
         const h = activeHtab(s);
