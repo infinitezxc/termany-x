@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
-import { remoteShCommand } from "./remoteCommand.js";
+import { acquireChannel, REMOTE_DEADLINE_GRACE_MS, remoteShCommand } from "./remoteCommand.js";
 
 const execFileAsync = promisify(execFile);
 const PROBE_TTL_MS = 3_000;
@@ -29,7 +29,7 @@ interface SshPortSession {
   controlPath: string;
   forwards: Map<number, SshPortForward>;
   pending: Map<number, Promise<SshPortForward>>;
-  probe?: { at: number; value: Promise<number[]> };
+  probe?: { at: number; value: Promise<number[]>; pending: boolean };
 }
 
 function validPort(value: unknown): number | null {
@@ -180,10 +180,19 @@ export class SshPortForwarding {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
     const now = Date.now();
-    if (session.probe && now - session.probe.at <= PROBE_TTL_MS) return session.probe.value;
-    const value = this.runProbe(session).catch(() => []);
-    session.probe = { at: now, value };
-    return value;
+    const last = session.probe;
+    // A probe still queued for a channel (or still running) is reused rather
+    // than stacking another behind it every poll.
+    if (last && (last.pending || now - last.at <= PROBE_TTL_MS)) return last.value;
+    const probe = { at: now, value: Promise.resolve<number[]>([]), pending: true };
+    probe.value = this.runProbe(session)
+      .catch(() => [])
+      .finally(() => {
+        probe.pending = false;
+        probe.at = Date.now();
+      });
+    session.probe = probe;
+    return probe.value;
   }
 
   /**
@@ -291,12 +300,23 @@ export class SshPortForwarding {
   private async runProbe(session: SshPortSession): Promise<number[]> {
     // Probes repeat every few seconds; a slow one must not outlive its timeout
     // on the host and hold one of the connection's sessions (see remoteDeadline).
-    const args = [...sshExecArgs(session), remoteShCommand(REMOTE_LISTEN_COMMAND, [], SSH_TIMEOUT_MS)];
-    const { stdout } = await execFileAsync("ssh", args, {
-      timeout: SSH_TIMEOUT_MS,
-      maxBuffer: MAX_BUFFER,
-    });
-    return parseRemoteListeningPorts(stdout);
+    const execArgs = sshExecArgs(session);
+    const args = [...execArgs, remoteShCommand(REMOTE_LISTEN_COMMAND, [], SSH_TIMEOUT_MS)];
+    // Shares the connection's channel budget with the file tree (same key).
+    const slot = await acquireChannel(execArgs);
+    let timedOut = false;
+    try {
+      const { stdout } = await execFileAsync("ssh", args, {
+        timeout: SSH_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER,
+      });
+      return parseRemoteListeningPorts(stdout);
+    } catch (error) {
+      timedOut = Boolean((error as { killed?: boolean }).killed);
+      throw error;
+    } finally {
+      slot.release(timedOut ? REMOTE_DEADLINE_GRACE_MS : 0);
+    }
   }
 
   private async runForward(

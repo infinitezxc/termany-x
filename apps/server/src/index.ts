@@ -1965,7 +1965,17 @@ async function serveRemoteMedia(
   // (`bytes=-500`) is served whole rather than costing a second round trip.
   const start = match?.[1] ? Number(match[1]) : 0;
   const end = match?.[1] && match[2] ? Number(match[2]) : undefined;
-  const stream = await remoteStream(sshArgs, file, start, end === undefined ? undefined : end - start + 1);
+  // Listen before awaiting: a client that cancels while the stream is queued
+  // or still opening must not leave it holding one of the host's sessions.
+  const gone = new AbortController();
+  res.on("close", () => gone.abort());
+  const stream = await remoteStream(
+    sshArgs,
+    file,
+    start,
+    end === undefined ? undefined : end - start + 1,
+    gone.signal,
+  );
   const last = Math.min(end ?? stream.size - 1, stream.size - 1);
   if (match?.[1] && (start > last || start >= stream.size)) {
     stream.kill();
@@ -1973,7 +1983,6 @@ async function serveRemoteMedia(
     res.end();
     return;
   }
-  res.on("close", stream.kill);
   res.writeHead(match?.[1] ? 206 : 200, {
     "Content-Type": contentType,
     "Content-Length": last - start + 1,

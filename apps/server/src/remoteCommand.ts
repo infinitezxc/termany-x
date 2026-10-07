@@ -33,3 +33,106 @@ export function remoteShCommand(script: string, args: string[], timeoutMs: numbe
   const body = timeoutMs === null ? script : remoteDeadline(script, timeoutMs / 1000);
   return ["exec sh -c", shellQuote(body), "termany", ...args.map(shellQuote)].join(" ");
 }
+
+// sshd caps the sessions on one connection (MaxSessions, default 10) and the
+// pane's interactive shell already holds one. Every other channel Termany opens
+// over a pane's master — file and git commands, the port probe, media streams —
+// takes a slot here first, so a burst queues instead of being refused (and the
+// master printing "channel N: open failed" into the terminal for each refusal).
+// Streams get a smaller share: a <video> the browser parks keeps its channel
+// for minutes, and must not starve the file tree.
+const MAX_CHANNELS = 8;
+const MAX_STREAMS = 4;
+
+/** How long a killed client's session may outlive it on the host: the
+ *  remoteDeadline watchdog started later than the local timer and polls once a
+ *  second, so it fires a little after the local timeout. */
+export const REMOTE_DEADLINE_GRACE_MS = 3_000;
+
+export interface ChannelSlot {
+  /** Give the slot back, optionally only after `afterMs` (see REMOTE_DEADLINE_GRACE_MS). */
+  release(afterMs?: number): void;
+}
+
+interface ChannelBudget {
+  channels: number;
+  streams: number;
+  waiting: { stream: boolean; grant: () => void }[];
+}
+
+const budgets = new Map<string, ChannelBudget>();
+
+function fits(budget: ChannelBudget, stream: boolean): boolean {
+  return budget.channels < MAX_CHANNELS && (!stream || budget.streams < MAX_STREAMS);
+}
+
+function take(budget: ChannelBudget, stream: boolean): void {
+  budget.channels++;
+  if (stream) budget.streams++;
+}
+
+function pump(key: string, budget: ChannelBudget): void {
+  for (let i = 0; i < budget.waiting.length; ) {
+    const waiter = budget.waiting[i];
+    if (!fits(budget, waiter.stream)) {
+      i++;
+      continue;
+    }
+    budget.waiting.splice(i, 1);
+    take(budget, waiter.stream);
+    waiter.grant();
+  }
+  if (budget.channels === 0 && budget.waiting.length === 0) budgets.delete(key);
+}
+
+/**
+ * Wait for a free channel on the connection `sshArgs` multiplexes over. A
+ * queued request whose `signal` aborts (the HTTP client went away) leaves the
+ * queue and rejects.
+ */
+export function acquireChannel(
+  sshArgs: string[],
+  options: { stream?: boolean; signal?: AbortSignal } = {},
+): Promise<ChannelSlot> {
+  const key = sshArgs.join("\0");
+  const stream = options.stream ?? false;
+  let budget = budgets.get(key);
+  if (!budget) budgets.set(key, (budget = { channels: 0, streams: 0, waiting: [] }));
+  const owner = budget;
+  let released = false;
+  const slot: ChannelSlot = {
+    release(afterMs = 0) {
+      if (released) return;
+      released = true;
+      const free = () => {
+        owner.channels--;
+        if (stream) owner.streams--;
+        pump(key, owner);
+      };
+      if (afterMs > 0) setTimeout(free, afterMs).unref();
+      else free();
+    },
+  };
+  if (options.signal?.aborted) return Promise.reject(new Error("request aborted"));
+  if (fits(owner, stream)) {
+    take(owner, stream);
+    return Promise.resolve(slot);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      const index = owner.waiting.indexOf(waiter);
+      if (index >= 0) owner.waiting.splice(index, 1);
+      pump(key, owner);
+      reject(new Error("request aborted"));
+    };
+    const waiter = {
+      stream,
+      grant: () => {
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve(slot);
+      },
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    owner.waiting.push(waiter);
+  });
+}

@@ -2,7 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import type { GitHost } from "./git.js";
-import { remoteShCommand, shellQuote } from "./remoteCommand.js";
+import {
+  acquireChannel,
+  REMOTE_DEADLINE_GRACE_MS,
+  remoteShCommand,
+  shellQuote,
+  type ChannelSlot,
+} from "./remoteCommand.js";
 
 // File-tree access for SSH panes. Every operation is one short POSIX `sh`
 // script run over the pane's existing OpenSSH master connection (see
@@ -15,10 +21,6 @@ import { remoteShCommand, shellQuote } from "./remoteCommand.js";
 // of `!` so csh has nothing to expand.
 
 const SSH_TIMEOUT_MS = 15_000;
-// sshd caps sessions per connection (MaxSessions, default 10) and the
-// interactive shell already holds one, so a burst of parallel calls (a git
-// overview across worktrees) queues here instead of failing channel opens.
-const MAX_CONCURRENT_PER_CONNECTION = 6;
 
 /** Expand a leading `~` in $1 the way the user would expect from a shell. */
 const EXPAND_P = 'p=$1; case $p in "~") p=$HOME;; "~/"*) p=$HOME/${p#"~/"};; esac;';
@@ -169,26 +171,6 @@ export function remoteSh(
   return run(sshArgs, script, args, { maxBytes: 16 * 1024 * 1024, ...options });
 }
 
-const queues = new Map<string, { active: number; waiting: (() => void)[] }>();
-
-async function limited<T>(sshArgs: string[], task: () => Promise<T>): Promise<T> {
-  const key = sshArgs.join("\0");
-  let queue = queues.get(key);
-  if (!queue) queues.set(key, (queue = { active: 0, waiting: [] }));
-  if (queue.active >= MAX_CONCURRENT_PER_CONNECTION) {
-    await new Promise<void>((resolve) => queue!.waiting.push(resolve));
-  }
-  queue.active++;
-  try {
-    return await task();
-  } finally {
-    queue.active--;
-    const next = queue.waiting.shift();
-    if (next) next();
-    else if (queue.active === 0) queues.delete(key);
-  }
-}
-
 function run(
   sshArgs: string[],
   script: string,
@@ -197,13 +179,16 @@ function run(
 ): Promise<Buffer> {
   // The host enforces the same timeout, so a killed client frees its session.
   const command = remoteShCommand(script, args, SSH_TIMEOUT_MS);
-  return limited(sshArgs, () => runNow(sshArgs, command, options));
+  // A burst of parallel calls (a git overview across worktrees) queues for
+  // the connection's channels rather than having its opens refused.
+  return acquireChannel(sshArgs).then((slot) => runNow(sshArgs, command, options, slot));
 }
 
 function runNow(
   sshArgs: string[],
   command: string,
   options: { input?: string; maxBytes: number },
+  slot: ChannelSlot,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn("ssh", [...sshArgs, command], { stdio: ["pipe", "pipe", "pipe"] });
@@ -211,7 +196,11 @@ function runNow(
     let bytes = 0;
     let stderr = "";
     let overflow = false;
-    const timer = setTimeout(() => child.kill(), SSH_TIMEOUT_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, SSH_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > options.maxBytes) {
@@ -226,10 +215,13 @@ function runNow(
     });
     child.on("error", (error) => {
       clearTimeout(timer);
+      slot.release();
       reject(error);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      // A killed client's session lingers until the host's own deadline fires.
+      slot.release(timedOut ? REMOTE_DEADLINE_GRACE_MS : 0);
       if (overflow) reject(new Error("remote output too large"));
       else if (code === 0) resolve(Buffer.concat(chunks));
       else reject(new Error(stderrMessage(stderr, code)));
@@ -300,15 +292,18 @@ export async function remoteDelete(sshArgs: string[], file: string): Promise<voi
 /**
  * Stream `[start, start + length)` of a remote file (to the end when length
  * is omitted). Resolves once the size line has arrived, with the rest of the
- * file still flowing through `body`. Callers must `kill()` when they stop
- * reading early (a client that seeks away mid-video).
+ * file still flowing through `body`. Aborting `signal` — the HTTP client went
+ * away, even before the size line or while queued for a channel — kills the
+ * stream; so does `kill()` for a caller that stops reading early.
  */
-export function remoteStream(
+export async function remoteStream(
   sshArgs: string[],
   file: string,
   start: number,
   length?: number,
+  signal?: AbortSignal,
 ): Promise<{ size: number; body: Readable; kill: () => void }> {
+  const slot = await acquireChannel(sshArgs, { stream: true, signal });
   return new Promise((resolve, reject) => {
     const args = [file, String(start), length === undefined ? "" : String(length)];
     // No deadline: a long video legitimately streams for minutes, and a stream
@@ -322,6 +317,18 @@ export function remoteStream(
     let settled = false;
     const kill = () => {
       if (child.exitCode === null) child.kill();
+    };
+    const onAbort = () => {
+      kill();
+      if (settled) return;
+      settled = true;
+      reject(new Error("request aborted"));
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+    const done = () => {
+      signal?.removeEventListener("abort", onAbort);
+      slot.release();
     };
     const onData = (chunk: Buffer) => {
       head = Buffer.concat([head, chunk]);
@@ -346,11 +353,13 @@ export function remoteStream(
       if (stderr.length < 8192) stderr += chunk.toString("utf8");
     });
     child.on("error", (error) => {
+      done();
       if (settled) return;
       settled = true;
       reject(error);
     });
     child.on("close", (code) => {
+      done();
       if (settled) return;
       settled = true;
       reject(new Error(stderrMessage(stderr, code)));
