@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
-import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions } from "./agentSessions.js";
+import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import {
@@ -29,7 +29,7 @@ import {
   type AcpRuntimeTarget,
 } from "./acpRuntime.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
-import { KillError, killProcess, readSystemStats } from "./systemStats.js";
+import { KillError, killProcess, killRemoteProcess, readRemoteSystemStats, readSystemStats } from "./systemStats.js";
 import { listSshConnections, listSshProfiles, remoteDirForConnection, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
 import {
   remoteGitHost,
@@ -1640,17 +1640,34 @@ const http = createServer((req, res) => {
 
   // Daily per-agent/per-model token usage for the SideRail usage dashboard.
   // `since` defaults to today and is clamped server-side to at most 31 days.
+  // An SSH pane's usage is its host's, read like /api/agent-sessions.
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-usage") {
     (async () => {
-      json(200, { rows: await listAgentUsage(reqUrl.searchParams.get("since")) });
+      const since = reqUrl.searchParams.get("since");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      const rows = remote
+        ? await listRemoteAgentUsage(
+            (script, args, options) => remoteSh(remote.args, script, args, options),
+            remote.target,
+            since,
+          )
+        : await listAgentUsage(since);
+      json(200, { rows });
     })().catch(fail);
     return;
   }
 
   // Whole-machine CPU/memory + every process for the activity monitor pane.
+  // An SSH pane's monitor shows (and signals processes on) its host.
   if (req.method === "GET" && reqUrl.pathname === "/api/system-stats") {
     (async () => {
-      json(200, await readSystemStats());
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      json(
+        200,
+        remote
+          ? await readRemoteSystemStats((script, args) => remoteSh(remote.args, script, args), remote.target)
+          : await readSystemStats(),
+      );
     })().catch(fail);
     return;
   }
@@ -1728,11 +1745,13 @@ const http = createServer((req, res) => {
   // so a bad request comes back as a 400 the UI can show, not a dead machine.
   if (req.method === "POST" && reqUrl.pathname === "/api/system-stats/kill") {
     readJson(req)
-      .then((body) => {
+      .then(async (body) => {
         const pid = Number(body?.pid);
         const signal = body?.force ? "SIGKILL" : "SIGTERM";
         try {
-          killProcess(pid, signal);
+          const remote = remoteFsFor(body?.session ? String(body.session) : null);
+          if (remote) await killRemoteProcess((script, args) => remoteSh(remote.args, script, args), pid, signal);
+          else killProcess(pid, signal);
           json(200, { ok: true });
         } catch (e) {
           if (e instanceof KillError) json(400, { error: e.message });

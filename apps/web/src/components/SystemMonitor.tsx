@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useNativeOccluder } from "../nativeViewOcclusion";
+import { focusedSshHost, useStore } from "../state/store";
 import { ActivityIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -204,6 +205,7 @@ function ProcessRow({
  * Deliberately one screen with no tabs — CPU and memory are the two numbers
  * that explain a slow machine, and putting them behind tabs would mean you can
  * never see both while a build runs. Polls /api/system-stats while mounted.
+ * Opened from an SSH pane, it monitors that host instead (fixed at open).
  */
 export function SystemMonitor() {
   const { t } = useI18n();
@@ -220,6 +222,7 @@ export function SystemMonitor() {
   const [detail, setDetail] = useState<ProcessDetail | null>(null);
   const [detailHistory, setDetailHistory] = useState<{ cpu: number; mem: number }[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [ssh] = useState(() => focusedSshHost(useStore.getState()));
   // Native web/office preview panes paint above the DOM and ignore z-index,
   // so one overlapping this centered dialog would swallow the buttons' clicks.
   const detailBackdropRef = useNativeOccluder<HTMLDivElement>("sysmon-process-detail", detail !== null);
@@ -244,7 +247,8 @@ export function SystemMonitor() {
 
     const poll = async () => {
       try {
-        const r = await fetch(apiPath("/api/system-stats"));
+        const params = ssh ? `?${new URLSearchParams({ session: ssh.session })}` : "";
+        const r = await fetch(apiPath(`/api/system-stats${params}`));
         if (!r.ok) throw new Error(String(r.status));
         const data = (await r.json()) as SystemStats;
         if (!cancelled) {
@@ -262,7 +266,7 @@ export function SystemMonitor() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [ssh]);
 
   // While the detail dialog is open, follow its process across polls: re-read
   // its live values and push another point onto the two history series. A group
@@ -337,7 +341,7 @@ export function SystemMonitor() {
       const r = await fetch(apiPath("/api/system-stats/kill"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pid, force }),
+        body: JSON.stringify({ pid, force, session: ssh?.session }),
       });
       const body = (await r.json().catch(() => null)) as { error?: string } | null;
       if (!r.ok) throw new Error(body?.error || String(r.status));
@@ -373,6 +377,11 @@ export function SystemMonitor() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {ssh && (
+          <span className="sysmon-host" title={ssh.label}>
+            {ssh.label}
+          </span>
+        )}
         <span className="sysmon-toolbar-note">
           {t("monitor.meta", { cores: stats.cpu.cores, uptime: formatUptime(stats.uptimeSec, t) })}
         </span>

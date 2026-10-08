@@ -243,6 +243,15 @@ async function parseCodexHeadLines(
 // claude
 
 async function parseClaudeFile(abs: string, st: fs.Stats): Promise<ParsedFile> {
+  return parseClaudeLines(fileLines(abs), abs, st.mtimeMs);
+}
+
+/** Full claude pass over `lines`; `abs` only names the session (as in parseClaudeHeadLines). */
+async function parseClaudeLines(
+  lines: AsyncIterable<string> | Iterable<string>,
+  abs: string,
+  mtimeMs: number,
+): Promise<ParsedFile> {
   let cwd: string | null = null;
   let gitBranch: string | null = null;
   let summary = "";
@@ -257,11 +266,7 @@ async function parseClaudeFile(abs: string, st: fs.Stats): Promise<ParsedFile> {
   // request id or every turn gets counted multiple times.
   const seen = new Set<string>();
 
-  const rl = readline.createInterface({
-    input: fs.createReadStream(abs, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
+  for await (const line of lines) {
     lineNo++;
     // Token usage rides on assistant lines throughout the file; regex instead
     // of JSON.parse keeps the full-file pass cheap (some lines are megabytes).
@@ -324,10 +329,10 @@ async function parseClaudeFile(abs: string, st: fs.Stats): Promise<ParsedFile> {
 
   return {
     session: {
-      sessionId: path.basename(abs, ".jsonl"),
+      sessionId: path.posix.basename(abs.replace(/\\/g, "/"), ".jsonl"),
       cwd,
       preview: cleanPreview(summary || firstUserText),
-      mtimeMs: st.mtimeMs,
+      mtimeMs,
       totalTokens: sawUsage ? totalTokens : null,
       contextTokens,
       gitBranch,
@@ -364,6 +369,13 @@ async function listClaudeFiles(): Promise<string[]> {
 // codex
 
 async function parseCodexFile(abs: string, st: fs.Stats): Promise<ParsedFile | null> {
+  return parseCodexLines(fileLines(abs), st.mtimeMs);
+}
+
+async function parseCodexLines(
+  lines: AsyncIterable<string> | Iterable<string>,
+  mtimeMs: number,
+): Promise<ParsedFile | null> {
   let sessionId: string | null = null;
   let cwd: string | null = null;
   let gitBranch: string | null = null;
@@ -374,11 +386,7 @@ async function parseCodexFile(abs: string, st: fs.Stats): Promise<ParsedFile | n
   let contextTokens: number | null = null;
   const buckets = new Map<string, UsageBucket>();
 
-  const rl = readline.createInterface({
-    input: fs.createReadStream(abs, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
+  for await (const line of lines) {
     lineNo++;
     // Cheap regex passes over every line (same rationale as claude): model
     // rides on turn_context, per-turn usage on token_count events.
@@ -437,7 +445,7 @@ async function parseCodexFile(abs: string, st: fs.Stats): Promise<ParsedFile | n
       sessionId,
       cwd,
       preview: cleanPreview(firstUserText),
-      mtimeMs: st.mtimeMs,
+      mtimeMs,
       totalTokens,
       contextTokens,
       gitBranch,
@@ -636,7 +644,7 @@ export async function listAgentSessions(
 // first lines of a batch of them, and the shared head parsers do the rest.
 
 /** Runs a fixed `sh` script on the remote host with $1… = args (see remoteSh). */
-export type RemoteExec = (script: string, args: string[]) => Promise<Buffer>;
+export type RemoteExec = (script: string, args: string[], options?: { maxBytes?: number }) => Promise<Buffer>;
 
 /** Head bytes read per file on the remote host (only remote CPU; never sent as-is). */
 const REMOTE_HEAD_INPUT_BYTES = 4 * 1024 * 1024;
@@ -662,6 +670,9 @@ const REMOTE_SOURCES: Record<
     /** Only head lines containing one of these are sent back — the ones the parser reads. */
     keep: string[];
     parse: (lines: string[], abs: string, mtimeMs: number) => Promise<AgentSession | null>;
+    /** Lines the full (usage) parser reads, wherever they sit in the file. */
+    usageKeep: string[];
+    parseFull: (lines: string[], abs: string, mtimeMs: number) => Promise<ParsedFile | null>;
   }
 > = {
   claude: {
@@ -672,6 +683,9 @@ const REMOTE_SOURCES: Record<
     // Most entry types carry cwd/gitBranch; a session may have no user line yet.
     keep: ['"type":"user"', '"type":"summary"', '"worktreeSession"', '"cwd":"'],
     parse: parseClaudeHeadLines,
+    // Assistant lines carry the usage and, like every entry, the cwd.
+    usageKeep: ['"usage"'],
+    parseFull: parseClaudeLines,
   },
   codex: {
     dir: "~/.codex/sessions",
@@ -680,6 +694,8 @@ const REMOTE_SOURCES: Record<
     accept: () => true,
     keep: ['"type":"session_meta"', '"role":"user"', '"type":"user_message"'],
     parse: (lines, _abs, mtimeMs) => parseCodexHeadLines(lines, mtimeMs),
+    usageKeep: ['"type":"session_meta"', '"turn_context"', '"total_token_usage"'],
+    parseFull: (lines, _abs, mtimeMs) => parseCodexLines(lines, mtimeMs),
   },
 };
 
@@ -746,6 +762,24 @@ const REMOTE_HEADS_SCRIPT =
   'n=$1; keep=$2; prog=$3; shift 3; for f; do printf "\\036%s\\n" "$f"; ' +
   `head -n "$n" < "$f" 2>/dev/null | head -c ${REMOTE_HEAD_INPUT_BYTES} | ` +
   `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_STRING_BYTES} -v cap=${REMOTE_HEAD_OUTPUT_BYTES} "$prog"; done`;
+
+/** String literals in usage lines are cut to this: room for any real cwd, model or id. */
+const REMOTE_USAGE_STRING_BYTES = 512;
+/** Upper bound on one file's shrunk usage lines (tens of thousands of turns). */
+const REMOTE_USAGE_FILE_BYTES = 48 * 1024 * 1024;
+/** Raw transcript bytes per round trip — shrunk output is always smaller, so
+ *  a multi-file trip stays under REMOTE_USAGE_MAX_BYTES; a larger file goes alone. */
+const REMOTE_USAGE_INPUT_BUDGET = 32 * 1024 * 1024;
+const REMOTE_USAGE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** $1 = keep patterns (`|`-separated), $2 = awk program, then files. Whole files, framed like
+ *  REMOTE_HEADS_SCRIPT; grep -F (one pattern per line) drops the bulk — tool output, file
+ *  contents — fast, so awk only shrinks the lines it keeps. */
+const REMOTE_USAGE_SCRIPT =
+  "keep=$1; prog=$2; shift 2; pats=$(printf '%s' \"$keep\" | tr '|' '\\n'); " +
+  'for f; do printf "\\036%s\\n" "$f"; ' +
+  'LC_ALL=C grep -F -- "$pats" < "$f" 2>/dev/null | ' +
+  `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_USAGE_STRING_BYTES} -v cap=${REMOTE_USAGE_FILE_BYTES} "$prog"; done; exit 0`;
 
 /** $@ = directories; prints 1 or 0 per directory, in order. */
 const REMOTE_DIRS_SCRIPT = 'for d; do if [ -d "$d" ]; then echo 1; else echo 0; fi; done';
@@ -883,28 +917,91 @@ function localDateStart(date: string): number {
   return new Date(year, month - 1, day).getTime();
 }
 
+function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: ParsedFile[], since: string): void {
+  for (const file of files) {
+    const project = file.session.cwd;
+    for (const b of file.usage) {
+      if (b.date < since) continue;
+      const key = `${agent}|${project ?? ""}|${b.date}|${b.model}`;
+      let row = merged.get(key);
+      if (!row) {
+        row = { agent, project, date: b.date, model: b.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        merged.set(key, row);
+      }
+      row.input += b.input;
+      row.output += b.output;
+      row.cacheRead += b.cacheRead;
+      row.cacheWrite += b.cacheWrite;
+    }
+  }
+}
+
 /** Daily usage merged by agent/project/date/model inside the bounded range. */
 export async function listAgentUsage(requestedSince?: string | null): Promise<AgentUsageRow[]> {
   const since = normalizeUsageSince(requestedSince);
   const sinceMs = localDateStart(since);
   const merged = new Map<string, AgentUsageRow>();
-  for (const agent of supportedAgents()) {
-    for (const file of await scanAgent(agent, sinceMs)) {
-      const project = file.session.cwd;
-      for (const b of file.usage) {
-        if (b.date < since) continue;
-        const key = `${agent}|${project ?? ""}|${b.date}|${b.model}`;
-        let row = merged.get(key);
-        if (!row) {
-          row = { agent, project, date: b.date, model: b.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-          merged.set(key, row);
-        }
-        row.input += b.input;
-        row.output += b.output;
-        row.cacheRead += b.cacheRead;
-        row.cacheWrite += b.cacheWrite;
-      }
+  for (const agent of supportedAgents()) mergeUsage(merged, agent, await scanAgent(agent, sinceMs), since);
+  return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** Shrunk usage lines for each file, keyed by path — split into round trips by raw size. */
+async function remoteUsageLines(exec: RemoteExec, keep: string[], files: RemoteFile[]): Promise<Map<string, string[]>> {
+  const lines = new Map<string, string[]>();
+  for (let i = 0; i < files.length; ) {
+    const chunkFiles: RemoteFile[] = [];
+    let input = REMOTE_USAGE_INPUT_BUDGET;
+    let args = REMOTE_HEADS_ARGS_BUDGET;
+    for (; i < files.length; i++) {
+      const argCost = files[i].abs.length + 3;
+      if (chunkFiles.length && (files[i].size > input || argCost > args)) break;
+      chunkFiles.push(files[i]);
+      input -= files[i].size;
+      args -= argCost;
     }
+    const argv = [keep.join("|"), REMOTE_SHRINK_AWK, ...chunkFiles.map((f) => f.abs)];
+    const out = (await exec(REMOTE_USAGE_SCRIPT, argv, { maxBytes: REMOTE_USAGE_MAX_BYTES })).toString("utf8");
+    for (const chunk of out.split("\x1e").slice(1)) {
+      const [file, ...rest] = chunk.split("\n");
+      lines.set(file, rest);
+    }
+  }
+  return lines;
+}
+
+/**
+ * listAgentUsage for an SSH pane's host. Only the usage-bearing lines of the
+ * transcripts updated in range cross the wire, shrunk; parses are cached per
+ * `hostKey` + path + mtime/size, so a refresh only re-reads what changed.
+ */
+export async function listRemoteAgentUsage(
+  exec: RemoteExec,
+  hostKey: string,
+  requestedSince?: string | null,
+): Promise<AgentUsageRow[]> {
+  const since = normalizeUsageSince(requestedSince);
+  const sinceMs = localDateStart(since);
+  const merged = new Map<string, AgentUsageRow>();
+  for (const [agent, source] of Object.entries(REMOTE_SOURCES)) {
+    const files = (await listRemoteFiles(exec, agent)).filter((f) => f.mtimeMs >= sinceMs);
+    const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
+    const fresh = (f: RemoteFile) => {
+      const hit = fullCache.get(cacheKey(f.abs));
+      return hit && hit.mtimeMs === f.mtimeMs && hit.size === f.size ? hit.parsed : null;
+    };
+    const missing = files.filter((f) => !fresh(f));
+    const fetched = missing.length ? await remoteUsageLines(exec, source.usageKeep, missing) : new Map<string, string[]>();
+    const parsed: ParsedFile[] = [];
+    for (const file of files) {
+      let result = fresh(file);
+      const lines = fetched.get(file.abs);
+      if (!result && lines) {
+        result = await source.parseFull(lines, file.abs, file.mtimeMs);
+        if (result) fullCache.set(cacheKey(file.abs), { mtimeMs: file.mtimeMs, size: file.size, parsed: result });
+      }
+      if (result) parsed.push(result);
+    }
+    mergeUsage(merged, agent, parsed, since);
   }
   return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
 }

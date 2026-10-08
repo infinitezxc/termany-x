@@ -3,6 +3,7 @@ import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { UsageSelect } from "./Select";
 import { useI18n } from "../i18n";
+import { focusedSshHost, useStore } from "../state/store";
 import { ChartIcon } from "./icons";
 
 interface UsageRow {
@@ -93,7 +94,8 @@ const MAX_CHART_DAYS = 31;
  * cost cards, a daily input/output bar chart, and a per-model breakdown, all
  * computed client-side from range-bounded /api/agent-usage rows. Cache tokens
  * are shown in the cards and cost but excluded from the chart — they'd dwarf
- * everything else.
+ * everything else. Opened from an SSH pane, it shows that host's usage — its
+ * agents run there (same as AgentHistory).
  */
 export function AgentUsage() {
   const { t } = useI18n();
@@ -103,12 +105,15 @@ export function AgentUsage() {
   const [range, setRange] = useState<RangeKey>("today");
   const [agent, setAgent] = useState("all");
   const [project, setProject] = useState("all");
+  // Frozen at open, so focusing another pane doesn't swap the host mid-use.
+  const [ssh] = useState(() => focusedSshHost(useStore.getState()));
 
   useEffect(() => {
     let cancelled = false;
     const abort = new AbortController();
     setRows(undefined);
     const params = new URLSearchParams({ since: rangeCutoff(range) });
+    if (ssh) params.set("session", ssh.session);
     fetch(apiPath(`/api/agent-usage?${params}`), { signal: abort.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((data) => {
@@ -126,7 +131,7 @@ export function AgentUsage() {
       cancelled = true;
       abort.abort();
     };
-  }, [range]);
+  }, [range, ssh]);
 
   const agentIds = useMemo(
     () => [...new Set((rows ?? []).map((r) => r.agent))].sort(),
@@ -271,6 +276,7 @@ export function AgentUsage() {
           <span className="usage-title">
             <ChartIcon />
             <span>{t("usage.title")}</span>
+            {ssh && <span className="usage-host" title={ssh.label}>{ssh.label}</span>}
           </span>
           <div className="usage-filters">
             <UsageSelect

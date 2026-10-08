@@ -2600,6 +2600,18 @@ export function remoteSessionFor(s: State, leafId: string): string | undefined {
   return leaf?.sshTarget && terminalSessionId(leaf.id, leaf.sshTarget);
 }
 
+/**
+ * The host a machine-wide view (agent usage, activity monitor) opened from the
+ * focused pane reports on: that SSH pane's session, or undefined for this machine.
+ */
+export function focusedSshHost(s: State): { label: string; session: string } | undefined {
+  const id = focusedCwdSession(s);
+  const leaf = id ? remoteLeafFor(s, id) : undefined;
+  return leaf?.sshTarget
+    ? { label: leaf.sshLabel ?? leaf.sshTarget, session: terminalSessionId(leaf.id, leaf.sshTarget) }
+    : undefined;
+}
+
 /** The SSH pane behind remoteSessionFor — for its target and label. */
 export function remoteLeafFor(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
   const [self, ...anchors] = cwdCandidates(s, leafId).map((id) => findLeafGlobal(s, id));

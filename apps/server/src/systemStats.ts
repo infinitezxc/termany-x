@@ -87,6 +87,14 @@ const HISTORY_CAP = 240;
 
 const history: Sample[] = [];
 
+function pushSample(list: Sample[], cpu: number, memUsed: number): Sample[] {
+  const now = Date.now();
+  list.push({ t: now, cpu, memUsed });
+  const cutoff = now - HISTORY_MAX_AGE_MS;
+  while (list.length && (list[0].t < cutoff || list.length > HISTORY_CAP)) list.shift();
+  return [...list];
+}
+
 // os.cpus() reports cumulative counters, so utilization is the delta between
 // two samples. The poll interval supplies that gap; the first call after a
 // cold start takes its own short sample instead.
@@ -108,17 +116,24 @@ function cpuTimes() {
   return { idle, user, system, total };
 }
 
+type CpuTimes = ReturnType<typeof cpuTimes>;
+
 async function cpuUsage(): Promise<{ usage: number; user: number; system: number }> {
   if (!prev) {
     prev = cpuTimes();
     await new Promise((r) => setTimeout(r, 150));
   }
   const now = cpuTimes();
+  const usage = cpuDelta(prev, now);
+  prev = now;
+  return usage;
+}
+
+function cpuDelta(prev: CpuTimes, now: CpuTimes): { usage: number; user: number; system: number } {
   const totalDelta = now.total - prev.total;
   const idleDelta = now.idle - prev.idle;
   const userDelta = now.user - prev.user;
   const systemDelta = now.system - prev.system;
-  prev = now;
   if (totalDelta <= 0) return { usage: 0, user: 0, system: 0 };
   const pct = (n: number) => Math.min(100, Math.max(0, (n / totalDelta) * 100));
   return {
@@ -154,31 +169,71 @@ async function swapUsage(): Promise<{ swapUsed?: number; swapTotal?: number }> {
   if (process.platform === "darwin") {
     try {
       const { stdout } = await execAsync("sysctl -n vm.swapusage");
-      // "total = 30720.00M  used = 29688.25M  free = 1031.75M"
-      const mb = (label: string) =>
-        Math.round(Number(new RegExp(`${label} = ([\\d.]+)M`).exec(stdout)?.[1] ?? NaN) * 1024 ** 2);
-      const total = mb("total");
-      const used = mb("used");
-      if (Number.isFinite(total) && Number.isFinite(used)) return { swapTotal: total, swapUsed: used };
+      return parseSwapUsage(stdout);
     } catch {
       /* no swap info — pressure falls back to the committed ratio alone */
     }
   }
   if (process.platform === "linux") {
     try {
-      const meminfo = await fs.promises.readFile("/proc/meminfo", "utf8");
-      const kb = (label: string) =>
-        Number(new RegExp(`${label}:\\s+(\\d+) kB`).exec(meminfo)?.[1] ?? NaN) * 1024;
-      const total = kb("SwapTotal");
-      const free = kb("SwapFree");
-      if (Number.isFinite(total) && Number.isFinite(free)) {
-        return { swapTotal: total, swapUsed: Math.max(0, total - free) };
-      }
+      return parseMeminfoSwap(await fs.promises.readFile("/proc/meminfo", "utf8"));
     } catch {
       /* fall through */
     }
   }
   return {};
+}
+
+/** `sysctl -n vm.swapusage`: "total = 30720.00M  used = 29688.25M  free = 1031.75M". */
+function parseSwapUsage(stdout: string): { swapUsed?: number; swapTotal?: number } {
+  const mb = (label: string) =>
+    Math.round(Number(new RegExp(`${label} = ([\\d.]+)M`).exec(stdout)?.[1] ?? NaN) * 1024 ** 2);
+  const total = mb("total");
+  const used = mb("used");
+  return Number.isFinite(total) && Number.isFinite(used) ? { swapTotal: total, swapUsed: used } : {};
+}
+
+function meminfoBytes(meminfo: string, label: string): number {
+  return Number(new RegExp(`${label}:\\s+(\\d+) kB`).exec(meminfo)?.[1] ?? NaN) * 1024;
+}
+
+function parseMeminfoSwap(meminfo: string): { swapUsed?: number; swapTotal?: number } {
+  const total = meminfoBytes(meminfo, "SwapTotal");
+  const free = meminfoBytes(meminfo, "SwapFree");
+  return Number.isFinite(total) && Number.isFinite(free) ? { swapTotal: total, swapUsed: Math.max(0, total - free) } : {};
+}
+
+/** macOS memory from `vm_stat`, or null when it reports nothing usable. */
+function parseVmStat(
+  stdout: string,
+  total: number,
+  swap: { swapUsed?: number; swapTotal?: number },
+): MemoryStats | null {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(stdout)?.[1] ?? 4096);
+  const pages = (label: string) => Number(new RegExp(`${label}:\\s+(\\d+)`).exec(stdout)?.[1] ?? 0) * pageSize;
+  const active = pages("Pages active");
+  const wired = pages("Pages wired down");
+  const compressed = pages("Pages occupied by compressor");
+  const cached = pages("File-backed pages");
+  const used = active + wired + compressed;
+  if (used <= 0) return null;
+  const m = { total, used: Math.min(total, used), active, wired, compressed, cached, ...swap };
+  return { ...m, pressure: memoryPressure(m) };
+}
+
+/** Linux memory from /proc/meminfo, or null without MemAvailable (pre-3.14 kernels). */
+function parseMeminfo(meminfo: string, total: number): MemoryStats | null {
+  const kb = (label: string) => meminfoBytes(meminfo, label) || 0;
+  const available = kb("MemAvailable");
+  if (available <= 0) return null;
+  const m = {
+    total,
+    used: Math.max(0, total - available),
+    active: kb("Active"),
+    cached: kb("Cached"),
+    ...parseMeminfoSwap(meminfo),
+  };
+  return { ...m, pressure: memoryPressure(m) };
 }
 
 /**
@@ -193,18 +248,8 @@ async function memoryStats(total: number): Promise<MemoryStats> {
   if (process.platform === "darwin") {
     try {
       const { stdout } = await execAsync("vm_stat");
-      const pageSize = Number(/page size of (\d+) bytes/.exec(stdout)?.[1] ?? 4096);
-      const pages = (label: string) =>
-        Number(new RegExp(`${label}:\\s+(\\d+)`).exec(stdout)?.[1] ?? 0) * pageSize;
-      const active = pages("Pages active");
-      const wired = pages("Pages wired down");
-      const compressed = pages("Pages occupied by compressor");
-      const cached = pages("File-backed pages");
-      const used = active + wired + compressed;
-      if (used > 0) {
-        const m = { total, used: Math.min(total, used), active, wired, compressed, cached, ...swap };
-        return { ...m, pressure: memoryPressure(m) };
-      }
+      const m = parseVmStat(stdout, total, swap);
+      if (m) return m;
     } catch {
       /* fall through to the portable estimate */
     }
@@ -212,20 +257,8 @@ async function memoryStats(total: number): Promise<MemoryStats> {
 
   if (process.platform === "linux") {
     try {
-      const meminfo = await fs.promises.readFile("/proc/meminfo", "utf8");
-      const kb = (label: string) =>
-        Number(new RegExp(`${label}:\\s+(\\d+) kB`).exec(meminfo)?.[1] ?? 0) * 1024;
-      const available = kb("MemAvailable");
-      if (available > 0) {
-        const m = {
-          total,
-          used: Math.max(0, total - available),
-          active: kb("Active"),
-          cached: kb("Cached"),
-          ...swap,
-        };
-        return { ...m, pressure: memoryPressure(m) };
-      }
+      const m = parseMeminfo(await fs.promises.readFile("/proc/meminfo", "utf8"), total);
+      if (m) return m;
     } catch {
       /* fall through */
     }
@@ -248,7 +281,6 @@ async function memoryStats(total: number): Promise<MemoryStats> {
  */
 async function listeningPorts(): Promise<Map<number, number[]>> {
   if (process.platform === "win32") return windowsListeningPorts();
-  const byPid = new Map<number, Set<number>>();
   if (process.platform !== "darwin" && process.platform !== "linux") return new Map();
   let stdout: string;
   try {
@@ -256,20 +288,48 @@ async function listeningPorts(): Promise<Map<number, number[]>> {
   } catch {
     return new Map();
   }
+  return parseLsof(stdout);
+}
 
+function addPort(byPid: Map<number, Set<number>>, pid: number, port: number): void {
+  if (!Number.isInteger(pid) || !Number.isInteger(port)) return;
+  const hit = byPid.get(pid);
+  if (hit) hit.add(port);
+  else byPid.set(pid, new Set([port]));
+}
+
+function sortedPorts(byPid: Map<number, Set<number>>): Map<number, number[]> {
+  return new Map([...byPid].map(([pid, ports]) => [pid, [...ports].sort((a, b) => a - b)]));
+}
+
+function parseLsof(stdout: string): Map<number, number[]> {
+  const byPid = new Map<number, Set<number>>();
   for (const line of stdout.split("\n")) {
     // "node  92310 benn  23u  IPv6 0x…  0t0  TCP *:3000 (LISTEN)"
     const pid = Number(/^\S+\s+(\d+)\s/.exec(line)?.[1]);
     // The address is the last field before (LISTEN): *:3000, 127.0.0.1:5432,
     // [::1]:8080 — take whatever follows the final colon.
     const port = Number(/\s(\S+):(\d+)\s+\(LISTEN\)/.exec(line)?.[2]);
-    if (!Number.isInteger(pid) || !Number.isInteger(port)) continue;
-    const hit = byPid.get(pid);
-    if (hit) hit.add(port);
-    else byPid.set(pid, new Set([port]));
+    addPort(byPid, pid, port);
   }
+  return sortedPorts(byPid);
+}
 
-  return new Map([...byPid].map(([pid, ports]) => [pid, [...ports].sort((a, b) => a - b)]));
+/**
+ * `ss -ltnp` — what a Linux host without lsof has. Only processes the user
+ * may inspect name their pids (others show no users:(…) column), the same
+ * limit lsof has without root.
+ * "LISTEN 0 4096 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=812,fd=6))"
+ */
+function parseSs(stdout: string): Map<number, number[]> {
+  const byPid = new Map<number, Set<number>>();
+  for (const line of stdout.split("\n")) {
+    const cols = line.trim().split(/\s+/);
+    if (cols[0] !== "LISTEN" || cols.length < 4) continue;
+    const port = Number(cols[3].slice(cols[3].lastIndexOf(":") + 1));
+    for (const m of line.matchAll(/pid=(\d+)/g)) addPort(byPid, Number(m[1]), port);
+  }
+  return sortedPorts(byPid);
 }
 
 /**
@@ -309,7 +369,10 @@ async function windowsListeningPorts(): Promise<Map<number, number[]>> {
  * searching for.
  */
 async function processGroups(): Promise<ProcessGroup[]> {
-  const instances = await processInstances();
+  return groupProcesses(await processInstances());
+}
+
+function groupProcesses(instances: NamedProcessInstance[]): ProcessGroup[] {
   if (!instances.length) return [];
 
   const byName = new Map<string, ProcessGroup>();
@@ -365,7 +428,11 @@ async function processInstances(): Promise<NamedProcessInstance[]> {
   } catch {
     return []; // ps missing or sandboxed away — the footer stats still work
   }
+  return parsePs(stdout, ports);
+}
 
+/** `ps -Ao pid=,pcpu=,rss=,user=,comm=` rows, each tagged with its listening ports. */
+function parsePs(stdout: string, ports: Map<number, number[]>): NamedProcessInstance[] {
   const instances: NamedProcessInstance[] = [];
   for (const line of stdout.split("\n")) {
     // comm can contain spaces (".../OrbStack Helper"), so only split the
@@ -373,7 +440,7 @@ async function processInstances(): Promise<NamedProcessInstance[]> {
     const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
     if (!m) continue;
     const [, pidStr, cpuStr, rssStr, user, comm] = m;
-    const name = path.basename(comm.trim()) || comm.trim();
+    const name = path.posix.basename(comm.trim()) || comm.trim();
     if (!name) continue;
     const pid = Number(pidStr);
     instances.push({
@@ -465,16 +532,11 @@ export async function readSystemStats(): Promise<SystemStats> {
   ]);
   const [l1, l5, l15] = os.loadavg();
 
-  const now = Date.now();
-  history.push({ t: now, cpu: cpu.usage, memUsed: memory.used });
-  const cutoff = now - HISTORY_MAX_AGE_MS;
-  while (history.length && (history[0].t < cutoff || history.length > HISTORY_CAP)) history.shift();
-
   return {
     cpu: { ...cpu, cores: os.cpus().length, loadavg: [l1, l5, l15] },
     memory,
     processes,
-    history: [...history],
+    history: pushSample(history, cpu.usage, memory.used),
     uptimeSec: os.uptime(),
   };
 }
@@ -499,5 +561,132 @@ export function killProcess(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
     if (code === "ESRCH") throw new KillError("process is already gone");
     if (code === "EPERM") throw new KillError("not permitted — the process belongs to another user");
     throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// remote (SSH panes)
+//
+// An SSH pane's monitor shows its host. One round trip per poll runs a fixed
+// script that prints each source under a RS (\036) header line; the parsers
+// above read the sections exactly as they read the local commands' output.
+
+/** Runs a fixed `sh` script on the remote host with $1… = args (see remoteSh). */
+export type RemoteExec = (script: string, args: string[]) => Promise<Buffer>;
+
+/** $1 = 1 when there is no previous /proc/stat sample to diff against. */
+const REMOTE_STATS_SCRIPT = [
+  "s() { printf '\\036%s\\n' \"$1\"; }",
+  "if [ -r /proc/stat ]; then",
+  "  s stat; head -n 1 /proc/stat",
+  "  if [ \"$1\" = 1 ]; then sleep 0.2 2>/dev/null || sleep 1; s stat2; head -n 1 /proc/stat; fi",
+  "  s meminfo; cat /proc/meminfo",
+  "  s uptime; cat /proc/uptime",
+  "  s loadavg; cat /proc/loadavg",
+  "  s cores; getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null",
+  "else",
+  "  s cores; sysctl -n hw.ncpu",
+  "  s memsize; sysctl -n hw.memsize",
+  "  s vmstat; vm_stat",
+  "  s swap; sysctl -n vm.swapusage",
+  "  s loadavg; sysctl -n vm.loadavg",
+  "  s boottime; sysctl -n kern.boottime",
+  "  s now; date +%s",
+  "fi 2>/dev/null",
+  "if command -v lsof >/dev/null 2>&1; then s lsof; lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null;",
+  "elif command -v ss >/dev/null 2>&1; then s ss; ss -ltnp 2>/dev/null; fi",
+  "s ps; ps -Ao pid=,pcpu=,rss=,user=,comm= 2>/dev/null",
+  "exit 0",
+].join("\n");
+
+/** Per host: the last /proc/stat counters (for the CPU delta) and the footer history. */
+const remoteHosts = new Map<string, { prev: CpuTimes | null; history: Sample[] }>();
+
+function parseRemoteSections(out: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  for (const chunk of out.split("\x1e").slice(1)) {
+    const nl = chunk.indexOf("\n");
+    if (nl > 0) sections.set(chunk.slice(0, nl), chunk.slice(nl + 1));
+  }
+  return sections;
+}
+
+/** The aggregate "cpu …" line of /proc/stat, in jiffies — split like cpuTimes(). */
+function parseProcStat(line: string | undefined): CpuTimes | null {
+  const f = /^cpu\s+(.*)/.exec(line?.trim() ?? "")?.[1].split(/\s+/).map(Number);
+  if (!f || f.length < 4 || f.some((n) => !Number.isFinite(n))) return null;
+  // user nice system idle iowait irq softirq steal (guest time is already in user).
+  const [user, nice, system, idle, iowait = 0, irq = 0, softirq = 0, steal = 0] = f;
+  return {
+    idle: idle + iowait,
+    user: user + nice,
+    system: system + irq + softirq + steal,
+    total: user + nice + system + idle + iowait + irq + softirq + steal,
+  };
+}
+
+export async function readRemoteSystemStats(exec: RemoteExec, hostKey: string): Promise<SystemStats> {
+  let host = remoteHosts.get(hostKey);
+  if (!host) remoteHosts.set(hostKey, (host = { prev: null, history: [] }));
+  const out = (await exec(REMOTE_STATS_SCRIPT, [host.prev ? "0" : "1"])).toString("utf8");
+  const sec = parseRemoteSections(out);
+  const num = (name: string) => Number(sec.get(name)?.trim().split(/\s+/)[0]);
+
+  const ports = sec.has("lsof") ? parseLsof(sec.get("lsof")!) : sec.has("ss") ? parseSs(sec.get("ss")!) : new Map();
+  const processes = groupProcesses(parsePs(sec.get("ps") ?? "", ports));
+  const cores = Math.max(1, num("cores") || 1);
+
+  let cpu = { usage: 0, user: 0, system: 0 };
+  let memory: MemoryStats | null = null;
+  let uptimeSec = 0;
+  let loadavg: [number, number, number] = [0, 0, 0];
+  if (sec.has("stat")) {
+    // Linux: /proc counters, diffed against this host's previous poll.
+    const first = host.prev ?? parseProcStat(sec.get("stat"));
+    const now = parseProcStat(sec.get("stat2") ?? sec.get("stat"));
+    if (first && now) cpu = cpuDelta(first, now);
+    host.prev = now;
+    const meminfo = sec.get("meminfo") ?? "";
+    memory = parseMeminfo(meminfo, meminfoBytes(meminfo, "MemTotal") || 0);
+    uptimeSec = num("uptime") || 0;
+    const l = (sec.get("loadavg") ?? "").trim().split(/\s+/).map(Number);
+    if (l.length >= 3) loadavg = [l[0], l[1], l[2]];
+  } else {
+    // macOS: no cumulative counters without a native call, so machine CPU is
+    // the processes' recent-average share of every core.
+    const sum = processes.reduce((a, p) => a + p.cpu, 0);
+    const usage = Math.min(100, sum / cores);
+    cpu = { usage, user: usage, system: 0 };
+    memory = parseVmStat(sec.get("vmstat") ?? "", num("memsize") || 0, parseSwapUsage(sec.get("swap") ?? ""));
+    const boot = Number(/sec = (\d+)/.exec(sec.get("boottime") ?? "")?.[1]);
+    if (boot && num("now")) uptimeSec = Math.max(0, num("now") - boot);
+    // "{ 1.84 2.10 2.31 }"
+    const l = (sec.get("loadavg") ?? "").replace(/[{}]/g, "").trim().split(/\s+/).map(Number);
+    if (l.length >= 3) loadavg = [l[0], l[1], l[2]];
+  }
+  // Neither /proc nor the macOS sysctls answered: not a host this can read.
+  if (!memory) throw new Error("unsupported remote system");
+  loadavg = loadavg.map((n) => (Number.isFinite(n) ? n : 0)) as [number, number, number];
+
+  return {
+    cpu: { ...cpu, cores, loadavg },
+    memory,
+    processes,
+    history: pushSample(host.history, cpu.usage, memory.used),
+    uptimeSec,
+  };
+}
+
+/** killProcess on an SSH pane's host, with the same pid/signal guards. */
+export async function killRemoteProcess(exec: RemoteExec, pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 1) throw new KillError(`refusing to signal pid ${pid}`);
+  if (signal !== "SIGTERM" && signal !== "SIGKILL") throw new KillError(`bad signal ${signal}`);
+  try {
+    await exec('kill -"$1" "$2"', [signal === "SIGKILL" ? "KILL" : "TERM", String(pid)]);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/no such process/i.test(message)) throw new KillError("process is already gone");
+    if (/not permitted/i.test(message)) throw new KillError("not permitted — the process belongs to another user");
+    throw new KillError(message);
   }
 }
