@@ -15,28 +15,42 @@ interface UsageRow {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Part of cacheWrite on the 1-hour TTL. */
+  cacheWrite1h?: number;
 }
 
 /**
- * Best-effort $/MTok price list for cost estimation. Prefix-matched against
- * the model id recorded in the transcripts; unmatched models still count
- * toward token totals but are excluded from the cost card (with a note).
- * Claude cache pricing: reads 0.1x input, writes 1.25x input.
+ * Best-effort $/MTok price list for cost estimation (Anthropic first-party
+ * rates). Prefix-matched in order against the model id recorded in the
+ * transcripts, so a more specific id must come before its family prefix.
+ * Unmatched models still count toward token totals but are excluded from the
+ * cost card (with a note). Cache writes are derived from the input price:
+ * 1.25x for the 5-minute TTL, 2x for the 1-hour TTL Claude Code uses. Cache
+ * reads vary by model, so they are listed.
  */
-const PRICING: Array<{ prefix: string; input: number; output: number; cacheRead: number; cacheWrite: number }> = [
-  { prefix: "claude-fable-5", input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-  { prefix: "claude-opus-4-1", input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-  { prefix: "claude-opus-4-2", input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-  { prefix: "claude-opus-4", input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  { prefix: "claude-sonnet", input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { prefix: "claude-3-7-sonnet", input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { prefix: "claude-3-5-sonnet", input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-  { prefix: "claude-3-5-haiku", input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
-  { prefix: "gpt-5-mini", input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
-  { prefix: "gpt-5-nano", input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0 },
-  { prefix: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
-  { prefix: "o3", input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+const PRICING: Array<{ prefix: string; input: number; output: number; cacheRead: number }> = [
+  { prefix: "claude-fable-5-1", input: 10, output: 50, cacheRead: 0.25 },
+  { prefix: "claude-mythos-5-1", input: 10, output: 50, cacheRead: 0.25 },
+  { prefix: "claude-fable-5", input: 10, output: 50, cacheRead: 1 },
+  { prefix: "claude-mythos-5", input: 10, output: 50, cacheRead: 1 },
+  { prefix: "claude-opus-5-5", input: 4, output: 20, cacheRead: 0.2 },
+  { prefix: "claude-opus-5", input: 5, output: 25, cacheRead: 0.5 },
+  // Opus 4 / 4.1 (claude-opus-4-20250514, claude-opus-4-1-…) kept the old price.
+  { prefix: "claude-opus-4-0", input: 15, output: 75, cacheRead: 1.5 },
+  { prefix: "claude-opus-4-1", input: 15, output: 75, cacheRead: 1.5 },
+  { prefix: "claude-opus-4-2", input: 15, output: 75, cacheRead: 1.5 },
+  { prefix: "claude-opus-4", input: 5, output: 25, cacheRead: 0.5 },
+  { prefix: "claude-sonnet-5", input: 2, output: 10, cacheRead: 0.2 },
+  { prefix: "claude-sonnet-4", input: 3, output: 15, cacheRead: 0.3 },
+  { prefix: "claude-3-7-sonnet", input: 3, output: 15, cacheRead: 0.3 },
+  { prefix: "claude-3-5-sonnet", input: 3, output: 15, cacheRead: 0.3 },
+  { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1 },
+  { prefix: "claude-3-5-haiku", input: 0.8, output: 4, cacheRead: 0.08 },
+  { prefix: "claude-3-haiku", input: 0.25, output: 1.25, cacheRead: 0.03 },
+  { prefix: "gpt-5-mini", input: 0.25, output: 2, cacheRead: 0.025 },
+  { prefix: "gpt-5-nano", input: 0.05, output: 0.4, cacheRead: 0.005 },
+  { prefix: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125 },
+  { prefix: "o3", input: 2, output: 8, cacheRead: 0.5 },
 ];
 
 function priceFor(model: string) {
@@ -46,8 +60,15 @@ function priceFor(model: string) {
 function rowCost(r: UsageRow): number | null {
   const p = priceFor(r.model);
   if (!p) return null;
+  // Older servers don't report the 1-hour split; treat their writes as 5-minute.
+  const write1h = Math.min(r.cacheWrite, r.cacheWrite1h ?? 0);
   return (
-    (r.input * p.input + r.output * p.output + r.cacheRead * p.cacheRead + r.cacheWrite * p.cacheWrite) / 1e6
+    (r.input * p.input +
+      r.output * p.output +
+      r.cacheRead * p.cacheRead +
+      (r.cacheWrite - write1h) * p.input * 1.25 +
+      write1h * p.input * 2) /
+    1e6
   );
 }
 

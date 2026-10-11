@@ -46,6 +46,8 @@ export interface UsageBucket {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** The part of cacheWrite written with the 1-hour TTL (billed 2x input, not 1.25x). */
+  cacheWrite1h: number;
 }
 
 /** UsageBucket aggregated across files, tagged with the owning agent + project. */
@@ -88,19 +90,21 @@ function addUsage(
   input: number,
   output: number,
   cacheRead: number,
-  cacheWrite: number
+  cacheWrite: number,
+  cacheWrite1h = 0
 ): void {
   if (input + output + cacheRead + cacheWrite === 0) return; // e.g. <synthetic> rows
   const key = `${date}|${model}`;
   let b = buckets.get(key);
   if (!b) {
-    b = { date, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    b = { date, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 };
     buckets.set(key, b);
   }
   b.input += input;
   b.output += output;
   b.cacheRead += cacheRead;
   b.cacheWrite += cacheWrite;
+  b.cacheWrite1h += cacheWrite1h;
 }
 
 function cleanPreview(s: string): string {
@@ -290,7 +294,9 @@ async function parseClaudeLines(
         const date = ts ? localDate(ts) : null;
         if (date) {
           const model = /"model":"([^"]+)"/.exec(line)?.[1] ?? "unknown";
-          addUsage(buckets, date, model, input, output, cacheR, cacheW);
+          // Claude Code writes its cache with the 1-hour TTL; usage.cache_creation splits it out.
+          const cacheW1h = Number(/"ephemeral_1h_input_tokens":(\d+)/.exec(line)?.[1] ?? 0);
+          addUsage(buckets, date, model, input, output, cacheR, cacheW, Math.min(cacheW, cacheW1h));
         }
       }
     }
@@ -925,13 +931,24 @@ function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: Pa
       const key = `${agent}|${project ?? ""}|${b.date}|${b.model}`;
       let row = merged.get(key);
       if (!row) {
-        row = { agent, project, date: b.date, model: b.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        row = {
+          agent,
+          project,
+          date: b.date,
+          model: b.model,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cacheWrite1h: 0,
+        };
         merged.set(key, row);
       }
       row.input += b.input;
       row.output += b.output;
       row.cacheRead += b.cacheRead;
       row.cacheWrite += b.cacheWrite;
+      row.cacheWrite1h += b.cacheWrite1h;
     }
   }
 }
