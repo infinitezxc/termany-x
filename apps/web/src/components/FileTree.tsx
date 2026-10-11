@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
+import { useFileDrag } from "../fileDrag";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import { revealPath } from "../openExternal";
@@ -463,6 +464,7 @@ function FileTreeRow({
       <div
         className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
+        data-drag-file={!entry.isDir && !renaming ? path : undefined}
         onClick={() => {
           if (renaming) return;
           if (entry.isDir) onToggleDir(path);
@@ -759,7 +761,8 @@ function FileTabStrip({
             role="tab"
             aria-selected={tab.path === activePath}
             className={`file-preview-tab ${tab.path === activePath ? "active" : ""} ${dirty ? "dirty" : ""} ${confirming ? "confirming" : ""}`}
-            title={tab.path}
+            title={`${tab.path} — drag to copy saved file`}
+            data-drag-file={tab.path}
             onClick={() => onActivate(tab.path)}
             onAuxClick={(e) => {
               if (e.button === 1) close(tab.path);
@@ -1498,6 +1501,7 @@ function FileTreeView({
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [creating, setCreating] = useState<Creating | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
+  const fileDrag = useFileDrag(remote);
   const closeEntryMenu = useCallback(() => setEntryMenu(null), []);
 
   const openEntryMenu = (path: string, entry: FsEntry | null, x: number, y: number) => {
@@ -1764,7 +1768,12 @@ function FileTreeView({
   }, [previewShown, activePath, remote, reloadTab]);
 
   // Nothing open: just the tree, full width.
-  if (!tabs.length) return <div className="file-tree">{treeUi}</div>;
+  if (!tabs.length) return (
+    <div className="file-tree" {...fileDrag.handlers}>
+      {fileDrag.status && <div className="file-tree-message" role="status">{fileDrag.status}</div>}
+      {treeUi}
+    </div>
+  );
 
   const startTreeResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1805,7 +1814,8 @@ function FileTreeView({
     />
   );
   return (
-    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""} ${treeOnly ? "tree-only" : ""}`} ref={splitRef}>
+    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""} ${treeOnly ? "tree-only" : ""}`} ref={splitRef} {...fileDrag.handlers}>
+      {fileDrag.status && <div className="file-drag-status" role="status">{fileDrag.status}</div>}
       {(treeOnly || !collapsed) && (
         <>
           <div className="file-tree" style={treeOnly ? undefined : { flexBasis: treeWidth }}>{treeUi}</div>

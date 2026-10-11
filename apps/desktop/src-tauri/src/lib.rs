@@ -1,3 +1,4 @@
+mod file_drag;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -1095,8 +1096,10 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .invoke_handler(tauri::generate_handler![
             stop_server,
+            file_drag::start_file_drag,
             frontend_ready_for_open_paths,
             webview_history,
             confirm_quit,

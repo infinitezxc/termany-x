@@ -6480,6 +6480,22 @@ html.tauri #root {
   inset: 0;
   display: flex;
 }
+
+/* Status floats above either the tree or the preview without shifting columns. */
+.file-drag-status {
+  position: absolute;
+  top: 36px;
+  left: 8px;
+  right: 8px;
+  z-index: 10;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
 .file-tree-split .file-tree {
   position: static;
   flex: 0 0 180px;

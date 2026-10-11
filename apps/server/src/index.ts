@@ -7,6 +7,8 @@ setGlobalDispatcher(new EnvHttpProxyAgent());
 import { spawn } from "node-pty";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import { verifyFileSize } from "./fileDrag.js";
+import { pipeline } from "node:stream/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1342,6 +1344,36 @@ const http = createServer((req, res) => {
       const parent = path.dirname(dir);
       json(200, { path: dir, parent: parent === dir ? null : parent, entries });
     })().catch(fail);
+    return;
+  }
+
+  // Requested by the native file promise only AFTER an accepted drop.
+  // Stream arbitrary binary files without preview limits or prefetching.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/download") {
+    const gone = new AbortController();
+    res.on("close", () => gone.abort());
+    (async () => {
+      const file = reqUrl.searchParams.get("path");
+      if (!file) throw new Error("path is required");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      const headers = { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" };
+      if (remote) {
+        const source = await remoteStream(remote.args, file, 0, undefined, gone.signal);
+        try {
+          res.writeHead(200, { ...headers, "Content-Length": source.size });
+          await pipeline(source.body, verifyFileSize(source.size), res, { signal: gone.signal });
+        } finally { source.kill(); }
+      } else {
+        const abs = path.resolve(file);
+        const stat = await fs.promises.stat(abs);
+        if (!stat.isFile()) throw new Error("not a file");
+        res.writeHead(200, { ...headers, "Content-Length": stat.size });
+        await pipeline(fs.createReadStream(abs), res, { signal: gone.signal });
+      }
+    })().catch((error) => {
+      if (res.headersSent || res.destroyed) res.destroy();
+      else fail(error);
+    });
     return;
   }
 

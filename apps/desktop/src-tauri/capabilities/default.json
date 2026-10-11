@@ -9,6 +9,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "drag:allow-start-drag",
     "updater:default",
     "process:default",
     "core:webview:allow-create-webview",
