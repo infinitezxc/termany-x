@@ -45,7 +45,7 @@ export function SshConnections({
   const [connections, setConnections] = useState<SshConnection[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
-  const [menuPosition, setMenuPosition] = useState({ left: 8, top: 36 });
+  const [menuPosition, setMenuPosition] = useState({ left: 8, top: 36, maxHeight: 480 });
   const [, setConnectionStatusVersion] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -77,9 +77,11 @@ export function SshConnections({
     const position = () => {
       const rect = rootRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const top = rect.bottom + 4;
       setMenuPosition({
         left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)),
-        top: rect.bottom + 4,
+        top,
+        maxHeight: Math.max(0, Math.min(480, window.innerHeight - top - 8)),
       });
     };
     position();

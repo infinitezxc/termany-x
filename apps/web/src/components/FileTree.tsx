@@ -5,6 +5,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
+import { writeClipboard } from "../clipboard";
+import { useI18n } from "../i18n";
 import { useFileDrag } from "../fileDrag";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
@@ -13,8 +15,10 @@ import { activeHtab, findLeaf, remoteSessionFor, useStore } from "../state/store
 import { sendCommand, terminalSessionId } from "../terminal/manager";
 import {
   ChevronIcon,
+  CheckIcon,
   CloseIcon,
   CollapseAllIcon,
+  CopyIcon,
   EditIcon,
   FileEntryIcon,
   FolderIcon,
@@ -241,6 +245,37 @@ function inlineMarkdown(text: string, baseDir = "", remote?: string): Array<stri
   return out;
 }
 
+function MarkdownCodeBlock({ code }: { code: string }) {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+
+  useEffect(() => {
+    setStatus("idle");
+  }, [code]);
+
+  useEffect(() => {
+    if (status === "idle") return;
+    const timer = window.setTimeout(() => setStatus("idle"), 1400);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  const label = t(status === "failed" ? "gateway.copyFailed" : "markdown.copy");
+  return (
+    <div className="markdown-preview-code">
+      <button
+        type="button"
+        className="markdown-preview-code-copy"
+        title={label}
+        aria-label={label}
+        onClick={async () => setStatus(await writeClipboard(code) ? "copied" : "failed")}
+      >
+        {status === "copied" ? <CheckIcon /> : <CopyIcon />}
+      </button>
+      <pre><code>{code}</code></pre>
+    </div>
+  );
+}
+
 function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDir: string; remote?: string }) {
   const blocks: JSX.Element[] = [];
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
@@ -271,7 +306,7 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
   for (const line of lines) {
     if (code) {
       if (/^```/.test(line)) {
-        blocks.push(<pre key={`c-${codeKey++}`}><code>{code.join("\n")}</code></pre>);
+        blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} />);
         code = null;
       } else code.push(line);
       continue;
@@ -318,7 +353,7 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
     }
     paragraph.push(line.trim());
   }
-  if (code) blocks.push(<pre key={`c-${codeKey++}`}><code>{code.join("\n")}</code></pre>);
+  if (code) blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} />);
   flushParagraph();
   flushList();
 

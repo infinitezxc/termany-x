@@ -4175,6 +4175,12 @@ html.tauri #root {
 .ssh-menu {
   width: min(320px, calc(100vw - 64px));
   padding: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.ssh-menu > :not(.ssh-host-list) {
+  flex-shrink: 0;
 }
 .ssh-connect-form {
   height: 36px;
@@ -4214,8 +4220,26 @@ html.tauri #root {
   letter-spacing: 0.08em;
 }
 .ssh-host-list {
+  min-height: 36px;
   max-height: min(300px, 48vh);
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fg-dim) var(--bg-2);
+}
+@supports selector(::-webkit-scrollbar) {
+  .ssh-host-list { scrollbar-color: auto; }
+}
+.ssh-host-list::-webkit-scrollbar {
+  width: 8px;
+}
+.ssh-host-list::-webkit-scrollbar-track {
+  background: var(--bg-2);
+}
+.ssh-host-list::-webkit-scrollbar-thumb {
+  background: var(--fg-dim);
+  border: 2px solid var(--bg-2);
 }
 .ssh-connection-row { min-height: 36px; }
 .ssh-connection-row:hover { background: var(--bg-3); }
@@ -6964,6 +6988,42 @@ html.tauri #root {
 .markdown-preview pre code {
   background: transparent;
   padding: 0;
+}
+.markdown-preview-code {
+  position: relative;
+  margin-bottom: 12px;
+}
+.markdown-preview-code pre {
+  margin: 0;
+  padding-top: 40px;
+}
+.markdown-preview-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.markdown-preview-code-copy:hover {
+  background: var(--bg-2);
+  color: var(--fg);
+}
+.markdown-preview-code-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.markdown-preview-code-copy svg {
+  width: 14px;
+  height: 14px;
 }
 .markdown-preview a {
   color: var(--accent);
