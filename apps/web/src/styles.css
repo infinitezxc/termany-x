@@ -6756,6 +6756,34 @@ html.tauri #root {
 .code-editor .cm-editor {
   height: 100%;
 }
+/* File contents need a visible, draggable scrollbar even on systems that
+   normally hide native scrollbars. Keep both axes usable for long lines. */
+.file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides) {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: color-mix(in srgb, var(--fg-dim) 58%, transparent) var(--bg-2);
+}
+@supports selector(::-webkit-scrollbar) {
+  .file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides) {
+    scrollbar-color: auto;
+  }
+}
+.file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides)::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides)::-webkit-scrollbar-track {
+  background: var(--bg-2);
+}
+.file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides)::-webkit-scrollbar-thumb {
+  min-width: 24px;
+  min-height: 24px;
+  background: color-mix(in srgb, var(--fg-dim) 58%, transparent);
+  border: 2px solid var(--bg-2);
+}
+.file-preview-panel :where(.cm-scroller, .markdown-preview, .csv-preview, .file-media-preview, .xlsx-sheet-body, .pptx-preview-slides)::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-dim);
+}
 /* The find/replace widget floats over the text (see EditorFindPanel) rather
    than taking a strip across the top, so drop the panel bar's own chrome. */
 .code-editor .cm-editor .cm-panels {
