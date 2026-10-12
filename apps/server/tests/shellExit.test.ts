@@ -111,3 +111,44 @@ test("a signalled kill is distinguishable from a clean exit", async () => {
     signal: 9,
   });
 });
+
+test("replacing a pane shell keeps the replacement available for reattachment", async () => {
+  const session = "test-history-replacement";
+  const sockets: WebSocket[] = [];
+  const connect = async () => {
+    const ws = new WebSocket(`ws://localhost:${PORT}/?session=${session}`);
+    sockets.push(ws);
+    let output = "";
+    ws.addEventListener("message", (event) => { output += String(event.data); });
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener("error", () => reject(new Error("connection failed")), { once: true });
+    });
+    // A prompt confirms the new shell has finished starting, or that an
+    // existing shell's replay has arrived. The PID distinguishes those cases.
+    for (let i = 0; i < 200 && !/[#$] /.test(output); i++) await sleep(50);
+    output = "";
+    ws.send(JSON.stringify({ type: "input", data: 'printf "__PANE_PID__%s\\n" "$$"\n' }));
+    for (let i = 0; i < 200; i++) {
+      const pid = output.match(/__PANE_PID__(\d+)/)?.[1];
+      if (pid) return pid;
+      await sleep(50);
+    }
+    throw new Error("shell did not report its PID");
+  };
+  try {
+    const original = await connect();
+    const forgotten = await fetch(`http://localhost:${PORT}/api/forget`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [session], paneIds: [session] }),
+    });
+    assert.equal(forgotten.ok, true);
+    const replacement = await connect();
+    assert.notEqual(replacement, original, "history resume must start a fresh shell");
+    await sleep(200);
+    assert.equal(await connect(), replacement, "late exit must not discard the replacement");
+  } finally {
+    for (const ws of sockets) ws.close();
+  }
+});

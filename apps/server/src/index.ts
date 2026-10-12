@@ -581,6 +581,10 @@ function wireSession(id: string | undefined, session: PtySession): void {
       session.ws.close(SHELL_EXIT_CLOSE_CODE, encodeShellExit(exitCode, signal));
     }
     if (id) {
+      // A pane can replace its shell and immediately reuse this id. The old
+      // process may report exit later; it must not remove the replacement or
+      // overwrite the replacement's activity and restore history.
+      if (ptySessions.get(id) !== session) return;
       activityTracker.noteExit(id, exitCode, signal);
       sshPortForwarding.remove(id);
       // Natural exit — flush final history so it still restores as plain

@@ -1,6 +1,7 @@
 import { textInputProps } from "../textInputProps";
 import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import { PanelsTopLeft } from "lucide-react";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
@@ -20,6 +21,7 @@ import {
   aggregateAgentActivity,
   agentActivitySnapshot,
   agentActivityTitle,
+  paneHasShell,
   reconcileTerminalFocus,
   subscribeAgentActivity,
   terminalSessionId,
@@ -44,10 +46,13 @@ import {
   ChevronIcon,
   CloseIcon,
   ExternalOpenIcon,
+  FilesIcon,
+  HistoryIcon,
   MaximizeIcon,
   PortForwardIcon,
   RestoreIcon,
   SpinnerIcon,
+  TerminalIcon,
   WebIcon,
 } from "./icons";
 import { AgentPane } from "./AgentPane";
@@ -269,7 +274,57 @@ function PanePortForward({ leaf }: { leaf: Leaf }) {
   );
 }
 
-/** The header bar of a pane: drag handle, editable name, magnify + close. */
+/** Switch the same pane while retaining its shell and local/SSH context. */
+function PaneViewSwitch({ leaf }: { leaf: Leaf }) {
+  const { t } = useI18n();
+  const setPaneView = useStore((s) => s.setPaneView);
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const { rootRef, panelRef } = usePaneHeadPopover(open, close);
+  const current = leaf.view ?? "terminal";
+  const choices = [
+    { view: "terminal", icon: TerminalIcon },
+    { view: "files", icon: FilesIcon },
+    { view: "history", icon: HistoryIcon },
+  ] as const;
+  const label = choices.map(({ view }) => t(`pane.view.${view}`)).join(" / ");
+
+  return (
+    <div className="pane-view-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="pane-btn"
+        title={label}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <PanelsTopLeft size={14} />
+      </button>
+      {open && (
+        <div className="pop-panel pane-view-panel" role="menu" aria-label={label} ref={panelRef}>
+          {choices.map(({ view, icon: Icon }) => (
+            <button
+              key={view}
+              type="button"
+              role="menuitemradio"
+              aria-checked={current === view}
+              className="pop-item"
+              onClick={() => { setPaneView(leaf.id, view); close(); }}
+            >
+              <Icon />
+              <span className="pop-item-label">{t(`pane.view.${view}`)}</span>
+              {current === view && <CheckIcon />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The header bar of a pane: drag handle, editable name, view + magnify + close. */
 function PaneHeader({
   leaf,
   solo,
@@ -353,6 +408,7 @@ function PaneHeader({
       <div className="pane-head-actions">
         {(leaf.view ?? "terminal") === "terminal" && <PaneServedUrls leaf={leaf} />}
         {(leaf.view ?? "terminal") === "terminal" && <PanePortForward leaf={leaf} />}
+        <PaneViewSwitch leaf={leaf} />
         <button
           className="pane-btn"
           title={withShortcut(solo ? "Restore" : "Maximize", "toggleMaximize")}
@@ -443,7 +499,7 @@ function PaneSlot({
         {leaf.view === "files" ? (
           <FileTree
             sessionId={leaf.id}
-            initialCwdFrom={leaf.cwdFrom}
+            initialCwdFrom={paneHasShell(leaf.id) ? undefined : leaf.cwdFrom}
             explicitRoot={leaf.filesRoot}
             explicitSelected={leaf.filesSelected}
           />

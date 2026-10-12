@@ -2401,7 +2401,9 @@ export function paneHasShell(paneId: string): boolean {
   return (sessionIdsByPane.get(paneId)?.size ?? 0) > 0;
 }
 
-/** Close every cached local/SSH session owned by a pane. */
+/** Close every cached local/SSH session owned by a pane.
+ * Resolves after the server forgets the shells, so callers replacing a
+ * terminal can wait before reconnecting with the same session id. */
 export function disposePaneSessions(paneId: string) {
   const ids = [...(sessionIdsByPane.get(paneId) ?? new Set([paneId]))];
   activeSessionByPane.delete(paneId);
@@ -2434,10 +2436,10 @@ export function disposePaneSessions(paneId: string) {
     forgetSessionUrls(id);
   }
   notifyConnectionStatus();
-  if (isDemo || !ids.length) return;
-  fetch(`${apiUrl()}/api/forget`, {
+  if (isDemo || !ids.length) return Promise.resolve(true);
+  return fetch(`${apiUrl()}/api/forget`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, paneIds: [paneId] }),
-  }).catch(() => {});
+  }).then((response) => response.ok).catch(() => false);
 }
