@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Доступно обновление {version}",
   "workspace.deleteConfirm": "Удалить «{name}»? Все его страницы, вкладки и история терминала будут удалены безвозвратно.",
   "sidebar.pages": "СТРАНИЦЫ",
+  "sidebar.resize": "Изменить ширину столбца страниц",
   "sidebar.activePages": "АКТИВНЫЕ",
   "sidebar.newPage": "Новая страница",
   "sidebar.addNestedPage": "Добавить вложенную страницу",

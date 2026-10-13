@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "{version} güncellemesi mevcut",
   "workspace.deleteConfirm": "\"{name}\" silinsin mi? İçindeki tüm sayfalar, sekmeler ve terminal geçmişi kalıcı olarak silinecek.",
   "sidebar.pages": "SAYFALAR",
+  "sidebar.resize": "Sayfa sütununun genişliğini ayarla",
   "sidebar.activePages": "ETKİN",
   "sidebar.newPage": "Yeni sayfa",
   "sidebar.addNestedPage": "Alt sayfa ekle",

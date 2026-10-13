@@ -121,6 +121,7 @@ export default {
   "workspace.updateAvailable": "有新版本 {version}",
   "workspace.deleteConfirm": "要刪除「{name}」嗎？其中所有頁面、分頁與終端機紀錄都會被永久刪除。",
   "sidebar.pages": "頁面",
+  "sidebar.resize": "調整頁面欄寬度",
   "sidebar.activePages": "使用中",
   "sidebar.newPage": "新增頁面",
   "sidebar.addNestedPage": "新增子頁面",

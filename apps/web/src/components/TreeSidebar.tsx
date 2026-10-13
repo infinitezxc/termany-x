@@ -19,6 +19,11 @@ import {
 import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
 
 const DRAG_MIME = "application/x-termany-node";
+const WIDTH_STORAGE_KEY = "termany.pageColumnWidth";
+const DEFAULT_WIDTH = 240;
+const MIN_WIDTH = 160;
+const MAX_WIDTH = 480;
+const clampWidth = (width: number) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, width));
 const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 type TreeDropPos = "into" | "before" | "after";
 type NodeDragUi = { id: string; targetId: string | null; pos: TreeDropPos | null; overTree: boolean };
@@ -335,7 +340,27 @@ export function TreeSidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [activeCollapsed, setActiveCollapsed] = useState(false);
   const [nodeDrag, setNodeDrag] = useState<NodeDragUi | null>(null);
+  const [width, setWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
+      return Number.isFinite(saved) && saved > 0 ? clampWidth(saved) : DEFAULT_WIDTH;
+    } catch { return DEFAULT_WIDTH; }
+  });
+  const [resizing, setResizing] = useState(false);
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(WIDTH_STORAGE_KEY, String(width)); } catch { /* Keep the in-memory width. */ }
+  }, [width]);
+
+  useEffect(() => {
+    if (!resizing) return;
+    const stop = () => { resizeRef.current = null; setResizing(false); };
+    window.addEventListener("blur", stop);
+    return () => window.removeEventListener("blur", stop);
+  }, [resizing]);
 
   // Keep the active page on screen. Creating a page (⌘N / ⌘⏎) appends it below
   // everything else, which in a long tree lands outside the scroll viewport —
@@ -470,7 +495,7 @@ export function TreeSidebar() {
   }, [moveNode, ws.id]);
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" ref={sidebarRef} style={{ width }}>
       {!botEnabled && (
         <button className="sidebar-workspace-switcher" title={ws.title} onClick={toggleWorkspaceSwitcher}>
           <span className={`ws-avatar${ws.icon ? " emoji" : ""}`} aria-hidden="true">
@@ -533,6 +558,45 @@ export function TreeSidebar() {
           </button>
         </div>
       </div>
+      <div
+        className={`sidebar-resizer${resizing ? " resizing" : ""}`}
+        role="separator"
+        aria-label={t("sidebar.resize")}
+        aria-orientation="vertical"
+        aria-valuemin={MIN_WIDTH}
+        aria-valuemax={MAX_WIDTH}
+        aria-valuenow={width}
+        tabIndex={0}
+        title={t("sidebar.resize")}
+        onKeyDown={(e) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          e.preventDefault();
+          setWidth((current) => e.key === "Home" ? MIN_WIDTH : e.key === "End" ? MAX_WIDTH
+            : clampWidth(current + (e.key === "ArrowRight" ? 10 : -10)));
+        }}
+        onPointerDown={(e) => {
+          if (e.button !== 0 || !e.isPrimary) return;
+          e.preventDefault();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          resizeRef.current = {
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startWidth: sidebarRef.current?.getBoundingClientRect().width ?? width,
+          };
+          setResizing(true);
+        }}
+        onPointerMove={(e) => {
+          const drag = resizeRef.current;
+          if (!drag || drag.pointerId !== e.pointerId) return;
+          setWidth(clampWidth(drag.startWidth + e.clientX - drag.startX));
+        }}
+        onPointerUp={(e) => {
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
+        onLostPointerCapture={() => { resizeRef.current = null; setResizing(false); }}
+        onPointerCancel={() => { resizeRef.current = null; setResizing(false); }}
+      />
+      {resizing && <div className="sidebar-resize-overlay" />}
       {/* Dropping on empty space moves the node back to the top level. */}
       <div
         ref={treeRef}

@@ -121,6 +121,7 @@ export default {
   "workspace.updateAvailable": "Update {version} available",
   "workspace.deleteConfirm": "Delete \"{name}\"? All its pages, tabs, and terminal history will be permanently deleted.",
   "sidebar.pages": "PAGES",
+  "sidebar.resize": "Resize page column",
   "sidebar.activePages": "ACTIVE",
   "sidebar.newPage": "New page",
   "sidebar.addNestedPage": "Add nested page",

@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Update {version} verfügbar",
   "workspace.deleteConfirm": "„{name}“ löschen? Alle enthaltenen Seiten, Tabs und der Terminalverlauf werden dauerhaft gelöscht.",
   "sidebar.pages": "SEITEN",
+  "sidebar.resize": "Breite der Seitenspalte ändern",
   "sidebar.activePages": "AKTIV",
   "sidebar.newPage": "Neue Seite",
   "sidebar.addNestedPage": "Unterseite hinzufügen",

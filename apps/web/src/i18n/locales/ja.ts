@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "アップデート {version} が利用できます",
   "workspace.deleteConfirm": "「{name}」を削除しますか？ 含まれるページ・タブ・ターミナル履歴はすべて完全に削除されます。",
   "sidebar.pages": "ページ",
+  "sidebar.resize": "ページ列の幅を変更",
   "sidebar.activePages": "使用中",
   "sidebar.newPage": "新規ページ",
   "sidebar.addNestedPage": "子ページを追加",

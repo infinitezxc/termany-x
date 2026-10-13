@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Atualização {version} disponível",
   "workspace.deleteConfirm": "Excluir \"{name}\"? Todas as páginas, abas e o histórico do terminal serão excluídos permanentemente.",
   "sidebar.pages": "PÁGINAS",
+  "sidebar.resize": "Ajustar largura da coluna de páginas",
   "sidebar.activePages": "ATIVAS",
   "sidebar.newPage": "Nova página",
   "sidebar.addNestedPage": "Adicionar subpágina",

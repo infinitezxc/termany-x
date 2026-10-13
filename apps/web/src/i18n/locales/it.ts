@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Aggiornamento {version} disponibile",
   "workspace.deleteConfirm": "Eliminare «{name}»? Tutte le sue pagine, schede e la cronologia del terminale verranno eliminate definitivamente.",
   "sidebar.pages": "PAGINE",
+  "sidebar.resize": "Ridimensiona la colonna delle pagine",
   "sidebar.activePages": "ATTIVE",
   "sidebar.newPage": "Nuova pagina",
   "sidebar.addNestedPage": "Aggiungi sottopagina",

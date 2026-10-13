@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Uppdatering {version} finns",
   "workspace.deleteConfirm": "Radera ”{name}”? Alla dess sidor, flikar och terminalhistorik raderas permanent.",
   "sidebar.pages": "SIDOR",
+  "sidebar.resize": "Ändra sidkolumnens bredd",
   "sidebar.activePages": "AKTIVA",
   "sidebar.newPage": "Ny sida",
   "sidebar.addNestedPage": "Lägg till undersida",

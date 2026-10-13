@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "업데이트 {version} 사용 가능",
   "workspace.deleteConfirm": "\"{name}\"을(를) 삭제할까요? 이 워크스페이스의 모든 페이지, 탭, 터미널 기록이 영구히 삭제됩니다.",
   "sidebar.pages": "페이지",
+  "sidebar.resize": "페이지 열 너비 조절",
   "sidebar.activePages": "활성",
   "sidebar.newPage": "새 페이지",
   "sidebar.addNestedPage": "하위 페이지 추가",

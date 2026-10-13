@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Update {version} beschikbaar",
   "workspace.deleteConfirm": "\"{name}\" verwijderen? Alle pagina's, tabbladen en terminalgeschiedenis worden definitief verwijderd.",
   "sidebar.pages": "PAGINA'S",
+  "sidebar.resize": "Breedte van paginakolom aanpassen",
   "sidebar.activePages": "ACTIEF",
   "sidebar.newPage": "Nieuwe pagina",
   "sidebar.addNestedPage": "Subpagina toevoegen",

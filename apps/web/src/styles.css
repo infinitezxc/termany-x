@@ -2742,12 +2742,37 @@ html.tauri #root {
 
 /* Left sidebar */
 .sidebar {
+  position: relative;
   width: 240px;
   flex-shrink: 0;
   background: var(--sidebar-bg);
   border-right: var(--sidebar-border);
   display: flex;
   flex-direction: column;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.sidebar-resizer.resizing {
+  background: var(--accent);
+  outline: none;
+}
+.sidebar-resize-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  cursor: col-resize;
+  user-select: none;
 }
 
 .workspace-menu-host {

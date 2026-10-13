@@ -125,6 +125,7 @@ export default {
   "workspace.updateAvailable": "Dostępna aktualizacja {version}",
   "workspace.deleteConfirm": "Usunąć „{name}”? Wszystkie jego strony, karty i historia terminala zostaną trwale usunięte.",
   "sidebar.pages": "STRONY",
+  "sidebar.resize": "Zmień szerokość kolumny stron",
   "sidebar.activePages": "AKTYWNE",
   "sidebar.newPage": "Nowa strona",
   "sidebar.addNestedPage": "Dodaj stronę podrzędną",

@@ -125,6 +125,7 @@ export default {
   "workspace.updateAvailable": "K dispozici je aktualizace {version}",
   "workspace.deleteConfirm": "Smazat „{name}“? Všechny jeho stránky, karty i historie terminálu budou trvale smazány.",
   "sidebar.pages": "STRÁNKY",
+  "sidebar.resize": "Změnit šířku sloupce stránek",
   "sidebar.activePages": "AKTIVNÍ",
   "sidebar.newPage": "Nová stránka",
   "sidebar.addNestedPage": "Přidat podstránku",

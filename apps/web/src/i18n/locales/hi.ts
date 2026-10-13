@@ -125,6 +125,7 @@ export default {
   "workspace.updateAvailable": "अपडेट {version} उपलब्ध है",
   "workspace.deleteConfirm": "\"{name}\" हटाएँ? इसके सभी पेज, टैब और टर्मिनल इतिहास हमेशा के लिए मिट जाएँगे।",
   "sidebar.pages": "पेज",
+  "sidebar.resize": "पेज कॉलम की चौड़ाई बदलें",
   "sidebar.activePages": "सक्रिय",
   "sidebar.newPage": "नया पेज",
   "sidebar.addNestedPage": "उप-पेज जोड़ें",

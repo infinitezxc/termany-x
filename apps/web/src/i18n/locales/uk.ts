@@ -125,6 +125,7 @@ export default {
   "workspace.updateAvailable": "Доступне оновлення {version}",
   "workspace.deleteConfirm": "Видалити «{name}»? Усі його сторінки, вкладки та історія термінала будуть видалені назавжди.",
   "sidebar.pages": "СТОРІНКИ",
+  "sidebar.resize": "Змінити ширину стовпця сторінок",
   "sidebar.activePages": "АКТИВНІ",
   "sidebar.newPage": "Нова сторінка",
   "sidebar.addNestedPage": "Додати вкладену сторінку",

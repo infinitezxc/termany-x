@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Mise à jour {version} disponible",
   "workspace.deleteConfirm": "Supprimer « {name} » ? Toutes ses pages, ses onglets et l'historique du terminal seront définitivement supprimés.",
   "sidebar.pages": "PAGES",
+  "sidebar.resize": "Redimensionner la colonne des pages",
   "sidebar.activePages": "ACTIVES",
   "sidebar.newPage": "Nouvelle page",
   "sidebar.addNestedPage": "Ajouter une sous-page",

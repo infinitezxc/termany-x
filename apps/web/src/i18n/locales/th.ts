@@ -125,6 +125,7 @@ export default {
   "workspace.updateAvailable": "มีอัปเดต {version} แล้ว",
   "workspace.deleteConfirm": "ลบ \"{name}\" ไหม? หน้า แท็บ และประวัติเทอร์มินัลทั้งหมดภายในจะถูกลบอย่างถาวร",
   "sidebar.pages": "หน้า",
+  "sidebar.resize": "ปรับความกว้างคอลัมน์หน้า",
   "sidebar.activePages": "ที่ใช้อยู่",
   "sidebar.newPage": "หน้าใหม่",
   "sidebar.addNestedPage": "เพิ่มหน้าย่อย",

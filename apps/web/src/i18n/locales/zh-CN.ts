@@ -121,6 +121,7 @@ export default {
   "workspace.updateAvailable": "发现新版本 {version}",
   "workspace.deleteConfirm": "删除「{name}」？其中的所有页面、标签页和终端历史记录都将被永久删除。",
   "sidebar.pages": "页面",
+  "sidebar.resize": "调整页面栏宽度",
   "sidebar.activePages": "活跃页面",
   "sidebar.newPage": "新建页面",
   "sidebar.addNestedPage": "新建子页面",

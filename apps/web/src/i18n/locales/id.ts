@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Pembaruan {version} tersedia",
   "workspace.deleteConfirm": "Hapus \"{name}\"? Semua halaman, tab, dan riwayat terminal di dalamnya akan dihapus permanen.",
   "sidebar.pages": "HALAMAN",
+  "sidebar.resize": "Ubah lebar kolom halaman",
   "sidebar.activePages": "AKTIF",
   "sidebar.newPage": "Halaman baru",
   "sidebar.addNestedPage": "Tambah subhalaman",

@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Actualización {version} disponible",
   "workspace.deleteConfirm": "¿Eliminar «{name}»? Todas sus páginas, pestañas y el historial de la terminal se eliminarán de forma permanente.",
   "sidebar.pages": "PÁGINAS",
+  "sidebar.resize": "Ajustar ancho de la columna de páginas",
   "sidebar.activePages": "ACTIVAS",
   "sidebar.newPage": "Nueva página",
   "sidebar.addNestedPage": "Añadir página anidada",

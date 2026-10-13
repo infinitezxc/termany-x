@@ -124,6 +124,7 @@ export default {
   "workspace.updateAvailable": "Đã có bản cập nhật {version}",
   "workspace.deleteConfirm": "Xoá \"{name}\"? Mọi trang, tab và lịch sử terminal bên trong sẽ bị xoá vĩnh viễn.",
   "sidebar.pages": "TRANG",
+  "sidebar.resize": "Điều chỉnh chiều rộng cột trang",
   "sidebar.activePages": "ĐANG DÙNG",
   "sidebar.newPage": "Trang mới",
   "sidebar.addNestedPage": "Thêm trang con",
