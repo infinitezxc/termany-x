@@ -3642,12 +3642,9 @@ html.tauri #root {
   overflow-y: auto;
   padding: 0 8px;
 }
-/* A shortcut row, not a tree row: no twisty affordance and no drag. Without
-   the hover actions (.tree-act, 24px) that set a page row's height, it would
-   sit shorter than the rows below it — so match that height explicitly. */
+/* A shortcut row, not a tree row: no twisty affordance and no drag. */
 .tree-row.active-item {
   cursor: pointer;
-  min-height: 30px;
 }
 .active-item .tree-twisty {
   cursor: default;
@@ -3681,6 +3678,7 @@ html.tauri #root {
   position: relative; /* anchors the drop-before/after insertion line */
   display: flex;
   align-items: center;
+  min-height: 30px; /* Keep row height stable when hover actions appear. */
   gap: 4px;
   padding: 3px 6px;
   border-radius: var(--radius-sm);
@@ -3861,12 +3859,11 @@ html.tauri #root {
   }
 }
 .tree-act {
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  opacity: 0;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -3878,8 +3875,10 @@ html.tauri #root {
   width: 18px;
   height: 18px;
 }
-.tree-row:hover .tree-act {
-  opacity: 1;
+/* Hidden actions leave their width available for the page name. */
+.tree-row:hover .tree-act,
+.tree-row:has(:focus-visible) .tree-act {
+  display: flex;
 }
 .tree-act:hover {
   background: var(--bg);
