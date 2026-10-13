@@ -16,6 +16,8 @@ import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { isTauri } from "./env";
+import { EditorView } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, findLeaf, focusedHostSession, leafIds, useStore } from "./state/store";
 import { openNewWindow } from "./state/windows";
@@ -28,6 +30,7 @@ import {
   scrollSessionToBottom,
   scrollSessionToTop,
   subscribeShellNaturalExit,
+  undoFocusedTerminal,
 } from "./terminal/manager";
 import { openLocalPathsInFocusedSession } from "./terminal/openLocalPath";
 import { checkForUpdate } from "./updater";
@@ -401,6 +404,26 @@ export function App() {
         .catch(() => {}); // offline / endpoint missing — try again next launch
     }, 5000);
     return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("undo-requested", () => {
+        if (cancelled || undoFocusedTerminal()) return;
+        const active = document.activeElement;
+        const editor = active instanceof HTMLElement ? active.closest<HTMLElement>(".cm-editor") : null;
+        const view = editor ? EditorView.findFromDOM(editor) : null;
+        if (view) undo(view);
+        else document.execCommand("undo");
+      }))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else cleanup = unlisten;
+      });
+    return () => { cancelled = true; cleanup?.(); };
   }, []);
 
   useEffect(() => {

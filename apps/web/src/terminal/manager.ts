@@ -11,6 +11,7 @@ import { loadAgentConfigs } from "../agents";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
 import { cutKeystrokes } from "./cutSelection";
+import { PasteUndo, textBeforeCursor } from "./pasteUndo";
 import { applyTextInputProps } from "../textInputProps";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
@@ -61,6 +62,7 @@ const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
 export interface Session {
   el: HTMLDivElement;
   term: Terminal;
+  pasteUndo: PasteUndo;
   fit: FitAddon;
   search: SearchAddon;
   backend: ITerminalBackend;
@@ -1471,6 +1473,12 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     for (const action of ACTIONS) {
       if (matchChord(event, keybindings[action.id] ?? action.default)) return false;
     }
+    if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.code === "KeyZ") {
+      event.preventDefault();
+      event.stopPropagation();
+      undoTerminalSession(id);
+      return false;
+    }
     return true;
   });
 
@@ -1561,6 +1569,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   const session: Session = {
     el,
     term,
+    pasteUndo: new PasteUndo(),
     fit,
     search,
     backend: initialBackend,
@@ -1703,6 +1712,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     // Any keystroke may move or clear the app's selection; mouse reports
     // (hover, wheel) leave it alone.
     if (!data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
+    session.pasteUndo.input(data);
     noteAgentInput(id, data);
     writeTerminalInput(id, session, data);
   });
@@ -1719,6 +1729,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     clickCount: number;
   } | null = null;
   el.addEventListener("mousedown", (event) => {
+    session.pasteUndo.clear();
     appSelection = null; // a click clears or restarts the app's selection
     if (event.button !== 0) {
       selectionGesture = null;
@@ -1789,9 +1800,17 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   el.addEventListener(
     "paste",
     (e) => {
-      if (isDemo) return; // no upload endpoint — let text paste through, drop images
       const images = pastedImages(e);
-      if (!images.length) return;
+      if (!images.length) {
+        const text = e.clipboardData?.getData("text/plain");
+        if (text) {
+          e.preventDefault();
+          e.stopPropagation();
+          pasteIntoSession(id, text);
+        }
+        return;
+      }
+      if (isDemo) return; // no upload endpoint
       e.preventDefault();
       // Also stop xterm's own paste handler (it ignores defaultPrevented and
       // pastes any text/plain flavor riding along with the image — e.g. the
@@ -1811,7 +1830,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         // and render [Image #N] chips instead of echoing raw temp paths.
         if (paths.length) {
           if (sessionLooksLikeAgentInput(id)) {
-            term.paste(`${paths.join(" ")} `);
+            pasteIntoSession(id, `${paths.join(" ")} `);
           } else {
             term.write(
               `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no TUI input prompt detected here, so the path was not inserted.\x1b[0m\r\n`
@@ -2290,7 +2309,34 @@ function flushShellReadyCommands(id: string) {
  *  keystrokes. Used for dropping a file/folder from Finder onto the pane. */
 export function pasteIntoSession(id: string, text: string) {
   id = activeSessionId(id);
-  sessions.get(id)?.term.paste(text);
+  const session = sessions.get(id);
+  session?.pasteUndo.paste(text, (value) => session.term.paste(value));
+}
+
+function undoTerminalSession(id: string) {
+  const session = sessions.get(id);
+  if (!session || session.ended) return;
+  const visible = sessionVisibleText(id);
+  const codex = !shellPromptVisible(visible) &&
+    (detectAgent(visible) === "codex" || agentSessionKinds.get(id) === "codex");
+  if (codex) {
+    const keys = session.pasteUndo.takeCodexUndo(textBeforeCursor(session.term.buffer.active));
+    if (keys) session.term.input(keys, true);
+    return;
+  }
+  // Readline/ZLE own shell undo. Ctrl+Z would suspend the foreground job.
+  session.pasteUndo.clear();
+  session.term.input("\x1f", true);
+}
+
+/** Native Edit → Undo must reach the terminal instead of its empty textarea. */
+export function undoFocusedTerminal(): boolean {
+  for (const [id, session] of sessions) {
+    if (!session.el.contains(document.activeElement)) continue;
+    undoTerminalSession(id);
+    return true;
+  }
+  return false;
 }
 
 /**

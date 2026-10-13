@@ -1198,8 +1198,14 @@ pub fn run() {
                     .separator()
                     .item(&quit)
                     .build()?;
+                // WKWebView's native undo targets xterm's empty textarea and
+                // consumes Cmd+Z before JavaScript can handle terminal input.
+                let undo = MenuItemBuilder::new("Undo")
+                    .id("undo")
+                    .accelerator("CmdOrCtrl+Z")
+                    .build(app)?;
                 let edit_menu = SubmenuBuilder::new(app, "Edit")
-                    .undo()
+                    .item(&undo)
                     .redo()
                     .separator()
                     .cut()
@@ -1227,6 +1233,7 @@ pub fn run() {
                 app.set_menu(menu)?;
                 app.on_menu_event(|app_handle, event| match event.id().as_ref() {
                     "quit" => emit_to_target(app_handle, "quit-requested", ()),
+                    "undo" => emit_to_target(app_handle, "undo-requested", ()),
                     "new_window" => {
                         if let Err(error) = create_window(app_handle) {
                             log::warn!("[termany] could not open a new window: {error}");
