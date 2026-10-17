@@ -20,8 +20,8 @@ interface UsageRow {
 }
 
 /**
- * Best-effort $/MTok price list for cost estimation (Anthropic first-party
- * rates). Prefix-matched in order against the model id recorded in the
+ * Best-effort $/MTok price list for cost estimation (first-party Standard
+ * short-context rates). Prefix-matched in order against the model id recorded in the
  * transcripts, so a more specific id must come before its family prefix.
  * Unmatched models still count toward token totals but are excluded from the
  * cost card (with a note). Cache writes are derived from the input price:
@@ -47,6 +47,11 @@ const PRICING: Array<{ prefix: string; input: number; output: number; cacheRead:
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1 },
   { prefix: "claude-3-5-haiku", input: 0.8, output: 4, cacheRead: 0.08 },
   { prefix: "claude-3-haiku", input: 0.25, output: 1.25, cacheRead: 0.03 },
+  // OpenAI rates: https://platform.openai.com/pricing (verified 2026-10-17).
+  { prefix: "gpt-6.1-sol", input: 2, output: 10, cacheRead: 0.1 },
+  { prefix: "gpt-6-astra", input: 10, output: 50, cacheRead: 1 },
+  { prefix: "gpt-6-sol", input: 2, output: 10, cacheRead: 0.2 },
+  { prefix: "gpt-6-luna", input: 0.1, output: 0.5, cacheRead: 0.01 },
   { prefix: "gpt-5-mini", input: 0.25, output: 2, cacheRead: 0.025 },
   { prefix: "gpt-5-nano", input: 0.05, output: 0.4, cacheRead: 0.005 },
   { prefix: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125 },
