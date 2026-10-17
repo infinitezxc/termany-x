@@ -16,7 +16,7 @@ import {
 import { claimPage, readWindowPref, writeWindowPref } from "./windows";
 import { stepWorkspace } from "./layoutMerge";
 import { focusPane, focusPaneAfterRemoval, selectHTab } from "./paneFocus";
-import { nextCyclablePaneView } from "./paneViewCycle";
+import { nextCyclablePaneView, paneWithView } from "./paneViewCycle";
 import { groupControllerSessionId, groupMemberIds, groupMemberSessionId } from "../agentGroupChat";
 import { deliverA2AReply, directA2ASessionId } from "../agentA2A";
 import { agentConversationTopicSessionId, agentConversationTopics, allAgentConversationMessages, groupTopicTitle } from "../agentGroupTopics";
@@ -2134,11 +2134,12 @@ export const useStore = create<State>((set, get) => ({
             const flip = (p: Pane): Pane => {
               if (p.kind === "split") return { ...p, children: p.children.map(flip) };
               if (p.id !== leafId) return p;
+              const ssh = inheritedSsh(s, p.id);
               const next = nextCyclablePaneView(
                 p.view,
-                p.sshTarget ? sshPaneVisibility(s.railVisibility) : s.railVisibility,
+                ssh ? sshPaneVisibility(s.railVisibility) : s.railVisibility,
               );
-              return next ? { ...p, view: next } : p;
+              return next ? paneWithView(p, next, ssh) : p;
             };
             return { ...h, layout: flip(h.layout) };
           }),
@@ -2157,7 +2158,11 @@ export const useStore = create<State>((set, get) => ({
             const setView = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view: p.sshTarget && !SSH_PANE_VIEWS.includes(view) ? "terminal" : view }
+                  ? paneWithView(
+                      p,
+                      inheritedSsh(s, p.id) && !SSH_PANE_VIEWS.includes(view) ? "terminal" : view,
+                      inheritedSsh(s, p.id),
+                    )
                   : p
                 : { ...p, children: p.children.map(setView) };
             return { ...h, layout: setView(h.layout) };

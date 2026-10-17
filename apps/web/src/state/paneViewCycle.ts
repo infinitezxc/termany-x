@@ -1,5 +1,5 @@
 import type { RailVisibility } from "../rail-config";
-import type { PaneView } from "./store";
+import type { Pane, PaneView } from "./store";
 
 /** Order the togglePaneView shortcut cycles through. */
 export const CYCLABLE_PANE_VIEWS = [
@@ -27,4 +27,13 @@ export function nextCyclablePaneView(
   const index = views.findIndex((candidate) => candidate === current);
   if (index < 0) return views[0];
   return views[(index + 1) % views.length];
+}
+
+/** Capture an inherited SSH host before changing the view to a terminal. */
+export function paneWithView(
+  pane: Extract<Pane, { kind: "leaf" }>,
+  view: PaneView,
+  ssh?: { sshTarget: string; sshLabel?: string },
+): Extract<Pane, { kind: "leaf" }> {
+  return { ...pane, ...(view === "terminal" ? ssh : undefined), view };
 }
