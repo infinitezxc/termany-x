@@ -4,24 +4,24 @@ import test from "node:test";
 import { dictionaries, LANGUAGES, matchLanguage, translate } from "./i18n/index";
 import en from "./i18n/locales/en";
 
-test("matchLanguage picks the script, not the region, for Chinese", () => {
+test("matchLanguage maps all Chinese variants to Simplified Chinese", () => {
   assert.equal(matchLanguage("zh"), "zh-CN");
   assert.equal(matchLanguage("zh-CN"), "zh-CN");
   assert.equal(matchLanguage("zh-Hans-CN"), "zh-CN");
-  assert.equal(matchLanguage("zh-TW"), "zh-TW");
-  assert.equal(matchLanguage("zh-HK"), "zh-TW");
-  assert.equal(matchLanguage("zh-Hant"), "zh-TW");
+  assert.equal(matchLanguage("zh-TW"), "zh-CN");
+  assert.equal(matchLanguage("zh-HK"), "zh-CN");
+  assert.equal(matchLanguage("zh-Hant"), "zh-CN");
 });
 
 test("matchLanguage falls back from a region to its base language", () => {
-  assert.equal(matchLanguage("fr-CA"), "fr");
-  assert.equal(matchLanguage("de-AT"), "de");
-  assert.equal(matchLanguage("pt-PT"), "pt-BR"); // only one Portuguese is shipped
   assert.equal(matchLanguage("EN-gb"), "en");
 });
 
 test("matchLanguage reports unshipped languages rather than guessing", () => {
-  // Pick tags we deliberately do not ship — update these if either is added.
+  assert.deepEqual(LANGUAGES.map(({ value }) => value), ["en", "zh-CN"]);
+  assert.equal(matchLanguage("fr-CA"), null);
+  assert.equal(matchLanguage("de-AT"), null);
+  assert.equal(matchLanguage("pt-PT"), null);
   assert.equal(matchLanguage("fi"), null);
   assert.equal(matchLanguage("el"), null);
   assert.equal(matchLanguage(""), null);
@@ -56,6 +56,6 @@ test("translations keep every placeholder the English string declares", () => {
 
 test("translate fills placeholders and leaves unknown ones alone", () => {
   assert.equal(translate("en", "gitdiff.summary", { files: 3 }), "3 files");
-  assert.equal(translate("de", "gitdiff.summary", { files: 3 }), "3 Dateien");
+  assert.equal(translate("zh-CN", "gitdiff.summary", { files: 3 }), "3 个文件");
   assert.equal(translate("en", "gitdiff.summary", {}), "{files} files");
 });

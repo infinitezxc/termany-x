@@ -6,7 +6,6 @@ export const CYCLABLE_PANE_VIEWS = [
   "terminal",
   "files",
   "git",
-  "agent",
   "web",
   "monitor",
   "providers",

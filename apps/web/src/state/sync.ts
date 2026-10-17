@@ -1,7 +1,7 @@
 import { apiPath } from "../api";
 import { demoState, isDemo } from "../demo";
-import { layoutHasPage, mergeLayout } from "./layoutMerge";
-import { activePageId, useStore, type AgentConversation, type UserProfile, type Workspace } from "./store";
+import { layoutHasPage, mergeLayout, restoreTerminalViews } from "./layoutMerge";
+import { activePageId, useStore, type UserProfile, type Workspace } from "./store";
 import { onTakenPagesChange, readWindowPref, takenPages, writeWindowPref } from "./windows";
 
 /**
@@ -120,11 +120,8 @@ export async function loadState(): Promise<void> {
       if (s.userProfile && typeof s.userProfile === "object" && typeof s.userProfile.nickname === "string") {
         useStore.setState({ userProfile: s.userProfile });
       }
-      if (Array.isArray(s.agentConversations) && s.agentConversations.length) {
-        useStore.setState({ agentConversations: s.agentConversations });
-      }
       if (Array.isArray(s.workspaces) && s.workspaces.length) {
-        useStore.setState({ workspaces: s.workspaces });
+        useStore.setState({ workspaces: restoreTerminalViews(s.workspaces) });
         seedSidebar(s.sidebarCollapsed);
         seedPages(s.workspaces);
         await adoptView(sharedActive);
@@ -142,7 +139,7 @@ export async function loadState(): Promise<void> {
       const parsed = JSON.parse(ls);
       const st = parsed?.state ?? parsed;
       if (Array.isArray(st?.workspaces) && st.workspaces.length) {
-        useStore.setState({ workspaces: st.workspaces });
+        useStore.setState({ workspaces: restoreTerminalViews(st.workspaces) });
         seedSidebar(st.sidebarCollapsed);
         seedPages(st.workspaces);
         if (typeof st.activeWorkspace === "string") sharedActive = st.activeWorkspace;
@@ -170,21 +167,17 @@ function applyRemoteState(payload: unknown): void {
   const s = payload as {
     clientId?: string;
     workspaces?: Workspace[];
-    agentConversations?: AgentConversation[];
     userProfile?: UserProfile;
   } | null;
   if (!s || s.clientId === clientId) return; // our own save, coming back around
   if (!Array.isArray(s.workspaces)) return;
-  const remote = s.workspaces;
+  const remote = restoreTerminalViews(s.workspaces);
   const ownPage = activePageId(useStore.getState());
 
   applyingRemote = true;
   try {
     useStore.setState((state) => ({
       workspaces: mergeLayout(state.workspaces, remote, ownPage),
-      ...(Array.isArray(s.agentConversations) && s.agentConversations.length
-        ? { agentConversations: s.agentConversations }
-        : {}),
       ...(s.userProfile && typeof s.userProfile.nickname === "string"
         ? { userProfile: s.userProfile }
         : {}),
@@ -237,11 +230,11 @@ export function startStateSync(): void {
     timer = setTimeout(() => {
       // Never persist a layout we never loaded — see `hydrated`.
       if (!hydrated) return;
-      const { workspaces, agentConversations, userProfile, activeWorkspace, sidebarCollapsed } = useStore.getState();
+      const { workspaces, userProfile, activeWorkspace, sidebarCollapsed } = useStore.getState();
       fetch(apiPath("/api/state"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, workspaces, agentConversations, userProfile, activeWorkspace, sidebarCollapsed }),
+        body: JSON.stringify({ clientId, workspaces, userProfile, activeWorkspace, sidebarCollapsed }),
       }).catch(() => {});
     }, 400);
   };

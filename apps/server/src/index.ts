@@ -17,19 +17,7 @@ import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage } from "./agentSessions.js";
-import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
-import {
-  acpRuntimeConfig,
-  acpRuntimeCwd,
-  closeAcpRuntimes,
-  closeAllAcpRuntimes,
-  loadAcpRuntimeConfig,
-  promptAcpRuntime,
-  respondAcpPermission,
-  setAcpConfigOption,
-  type AcpRuntimeTarget,
-} from "./acpRuntime.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, killRemoteProcess, readRemoteSystemStats, readSystemStats } from "./systemStats.js";
 import { listSshConnections, listSshProfiles, remoteDirForConnection, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, sshInteractiveArgsForConnection, testSshProfile } from "./ssh.js";
@@ -76,8 +64,6 @@ import {
   setSessionCwd,
 } from "./db.js";
 import { gitDiffs, gitOverview, withGitHost, worktreeOverview } from "./git.js";
-import { pickFolder } from "./folderPicker.js";
-import { pickFiles } from "./filePicker.js";
 import { testProvider } from "./providerTest.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
 import { generateTheme } from "./theme.js";
@@ -992,159 +978,6 @@ const http = createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && req.url === "/api/agent/acp/config") {
-    readJson(req)
-      .then(async (body) => {
-        const target = await acpTarget(body);
-        const configId = body?.configId ? String(body.configId) : "";
-        if (configId) {
-          json(200, { options: await setAcpConfigOption({ ...target, configId, value: String(body?.value ?? "") }) });
-          return;
-        }
-        // Serve what the agent said last time if we have it; only pay for a
-        // start-up when there is nothing to show.
-        const known = acpRuntimeConfig(target);
-        json(200, { options: known ?? (await loadAcpRuntimeConfig(target)) });
-      })
-      .catch(fail);
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/api/agent/acp/chat") {
-    readJson(req)
-      .then(async (body) => {
-        const prompt = String(body?.prompt ?? "").trim();
-        if (!prompt) throw new Error("prompt is required");
-        res.writeHead(200, {
-          "Content-Type": "application/x-ndjson; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-        });
-        res.flushHeaders();
-        const abort = new AbortController();
-        req.on("aborted", () => abort.abort());
-        res.on("close", () => {
-          if (!res.writableEnded) abort.abort();
-        });
-        const heartbeat = setInterval(() => {
-          if (!res.writableEnded) res.write(`${JSON.stringify({ type: "heartbeat" })}\n`);
-        }, 10_000);
-        try {
-          const target = await acpTarget(body);
-          await promptAcpRuntime({
-            ...target,
-            prompt,
-            images: body?.images,
-            botIdentity: body?.botIdentity,
-            applySavedConfig: body?.applySavedConfig === true,
-            signal: abort.signal,
-            emit: (event) => {
-              if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
-            },
-          });
-          if (!res.writableEnded) res.end();
-        } catch (error) {
-          if (abort.signal.aborted || res.writableEnded) return;
-          const message = error instanceof Error ? error.message : String(error);
-          res.end(`${JSON.stringify({ type: "error", error: message })}\n`);
-        } finally {
-          clearInterval(heartbeat);
-        }
-      })
-      .catch(fail);
-    return;
-  }
-
-  // Where an ACP conversation will run, so the composer chip always shows the
-  // true target: an explicit (re)pick wins, then the folder a live session is
-  // already bound to, then the same inheritance the chat endpoint would use.
-  // Reports whether the explicit pick is still valid so stale ones get dropped.
-  if (req.method === "GET" && reqUrl.pathname === "/api/agent/acp/cwd") {
-    void (async () => {
-      const requested = reqUrl.searchParams.get("cwd") || "";
-      const explicitCwd = requested ? await dirIfValid(requested) : undefined;
-      const cwd =
-        explicitCwd ??
-        acpRuntimeCwd(reqUrl.searchParams.get("paneId") ?? "") ??
-        (await resolveSpawnCwd(reqUrl.searchParams.get("cwdFrom"), reqUrl.searchParams.get("paneId")));
-      json(200, { cwd, home: os.homedir(), explicit: Boolean(explicitCwd) });
-    })().catch(fail);
-    return;
-  }
-
-  // Attach local files by their paths, using the same native picker as terminals.
-  if (req.method === "POST" && req.url === "/api/agent/pick-files") {
-    readJson(req)
-      .then(async (body) => {
-        const paths = await pickFiles(String(body?.prompt ?? "") || "Add attachment");
-        json(200, paths ? { paths } : { cancelled: true });
-      })
-      .catch(fail);
-    return;
-  }
-
-  // OS-native folder dialog for picking an agent's working folder. Blocks this
-  // request (not the server) until the user chooses or cancels.
-  if (req.method === "POST" && req.url === "/api/agent/acp/pick-cwd") {
-    readJson(req)
-      .then(async (body) => {
-        const picked = await pickFolder(
-          String(body?.prompt ?? "") || "Choose a working folder",
-          await dirIfValid(body?.defaultPath ? String(body.defaultPath) : undefined)
-        );
-        json(200, picked ? { path: picked } : { cancelled: true });
-      })
-      .catch(fail);
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/api/agent/acp/permission") {
-    readJson(req)
-      .then((body) => {
-        const ok = respondAcpPermission(
-          String(body?.paneId ?? ""),
-          String(body?.requestId ?? ""),
-          String(body?.optionId ?? "")
-        );
-        json(ok ? 200 : 404, ok ? { ok: true } : { error: "permission request is no longer active" });
-      })
-      .catch(fail);
-    return;
-  }
-
-  // Native conversation panes use the configured BYOK provider. Normalize all
-  // upstream streaming protocols to newline-delimited JSON so API keys and
-  // provider quirks stay on the server side.
-  if (req.method === "POST" && req.url === "/api/agent/chat") {
-    readJson(req)
-      .then(async (body) => {
-        res.writeHead(200, {
-          "Content-Type": "application/x-ndjson; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-        });
-        // Acknowledge delivery before waiting for the provider's first token.
-        res.flushHeaders();
-        const abort = new AbortController();
-        req.on("aborted", () => abort.abort());
-        res.on("close", () => {
-          if (!res.writableEnded) abort.abort();
-        });
-        try {
-          const result = await streamAgentChat(body?.model, body?.messages, abort.signal, (text) => {
-            if (!res.writableEnded && text) res.write(`${JSON.stringify({ type: "delta", text })}\n`);
-          }, body?.botIdentity);
-          if (!res.writableEnded) res.end(`${JSON.stringify({ type: "done", model: result.model })}\n`);
-        } catch (err) {
-          if (abort.signal.aborted || res.writableEnded) return;
-          const message = err instanceof Error ? err.message : String(err);
-          res.end(`${JSON.stringify({ type: "error", error: message })}\n`);
-        }
-      })
-      .catch(fail);
-    return;
-  }
-
   // Detect local agent CLIs using the same login-shell PATH that terminal panes use.
   if (req.method === "POST" && req.url === "/api/agents/detect") {
     readJson(req)
@@ -1251,7 +1084,6 @@ const http = createServer((req, res) => {
         }
         const uniqueIds = [...new Set(ids)];
         for (const id of uniqueIds) killSession(id);
-        closeAcpRuntimes(uniqueIds);
         forgetSessions(uniqueIds);
         json(200, { ok: true });
       })
@@ -2139,29 +1971,6 @@ async function resolveSpawnCwd(
 }
 
 /**
- * Read the pane, agent, folder and remembered selector picks out of an ACP
- * request body. Shared by the chat stream and the selector endpoint so both
- * land on the same session — see acquire() in acpRuntime.ts.
- */
-async function acpTarget(body: any): Promise<AcpRuntimeTarget> {
-  const paneId = String(body?.paneId ?? "");
-  const agentId = String(body?.agentId ?? "");
-  if (!paneId || !agentId) throw new Error("paneId and agentId are required");
-  // A folder the user picked explicitly wins over the inherited terminal cwd;
-  // if it has since vanished, fail loudly rather than silently landing the
-  // agent somewhere else.
-  const requested = body?.cwd ? String(body.cwd) : "";
-  const explicitCwd = requested ? await dirIfValid(requested) : undefined;
-  if (requested && !explicitCwd) throw new Error(`Working folder no longer exists: ${requested}`);
-  const cwd = explicitCwd ?? (await resolveSpawnCwd(body?.cwdFrom ? String(body.cwdFrom) : null, paneId));
-  const config: Record<string, string> = {};
-  for (const [key, value] of Object.entries(body?.config ?? {})) {
-    if (typeof value === "string") config[String(key)] = value;
-  }
-  return { paneId, agentId, cwd, cwdExplicit: Boolean(explicitCwd), config };
-}
-
-/**
  * Record every live session's working directory so a respawned shell can return
  * to it after the app is closed and reopened. Runs on an interval (the app may
  * be SIGKILLed on quit, so we can't rely on a shutdown hook) and once at exit.
@@ -2418,7 +2227,6 @@ async function shutdown() {
       /* already gone */
     }
   }
-  closeAllAcpRuntimes();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

@@ -89,8 +89,8 @@ export function AgentAvatarEditor({ avatar, icon, fallback, group, members, comp
       <button
         type="button"
         className="agent-avatar-edit"
-        title={t("agentWorkspace.changeAvatar")}
-        aria-label={t("agentWorkspace.changeAvatar")}
+        title={t("agents.changeAvatar")}
+        aria-label={t("agents.changeAvatar")}
         aria-busy={uploading}
         disabled={uploading}
         onClick={() => fileInputRef.current?.click()}
@@ -118,7 +118,7 @@ export function AgentAvatarEditor({ avatar, icon, fallback, group, members, comp
           disabled={uploading}
           onClick={() => fileInputRef.current?.click()}
         >
-          {t("agentWorkspace.changeAvatar")}
+          {t("agents.changeAvatar")}
         </button>
       )}
       {avatar && !compact && showReset && (
@@ -131,10 +131,10 @@ export function AgentAvatarEditor({ avatar, icon, fallback, group, members, comp
             onAvatarChange("");
           }}
         >
-          {t("agentWorkspace.resetAvatar")}
+          {t("agents.resetAvatar")}
         </button>
       )}
-      {avatarError && <p className="agent-avatar-error" role="alert">{t("agentWorkspace.avatarError")}</p>}
+      {avatarError && <p className="agent-avatar-error" role="alert">{t("agents.avatarError")}</p>}
     </div>
   );
 }

@@ -1,4 +1,3 @@
-import { AGENT_RUNTIME_REVISION, defaultAgentRuntime, inheritsDefaultAgentRuntime } from "@termany/core";
 import { useEffect, useState } from "react";
 import { apiPath } from "./api";
 import { buildAgentCommand, normalizeCustomAgentCommand } from "./agentCommand";
@@ -20,10 +19,6 @@ const AGENTS_CHANGED_EVENT = "termany:agents-changed";
 // can strip stale localStorage entries instead of resurrecting them as
 // "custom" agents.
 const REMOVED_AGENT_IDS = new Set(["charm", "kilocode", "droid"]);
-// Shared with the server. Each adapter's introduction revision determines
-// whether a saved null predates support or is an explicit user opt-out.
-const RUNTIME_REVISION = AGENT_RUNTIME_REVISION;
-
 export type AgentConfig = {
   id: string;
   name: string;
@@ -36,35 +31,11 @@ export type AgentConfig = {
   /** Whether the interactive CLI/TUI command is installed. */
   terminalDetected?: boolean;
   terminalDetectedPath?: string;
-  /** Whether the separate conversation runtime is ready. */
-  detected?: boolean;
-  detectedPath?: string;
-  runtime?: AgentRuntimeConfig;
-  /** Which generation of built-in ACP defaults this entry was written against. */
-  runtimeRevision?: number;
-};
-
-export type AgentRuntimeConfig = {
-  protocol: "acp";
-  command: string;
-  args: string;
-  distribution: "managed" | "system" | "custom";
-  modelSource: "termany" | "agent";
-} | {
-  protocol: "acp-http";
-  endpoint: string;
-  apiKey: string;
 };
 
 type StoredAgentConfig = Partial<Omit<AgentConfig,
-  "builtIn" | "terminalDetected" | "terminalDetectedPath" | "detected" | "detectedPath" | "runtime"
->> & {
-  id: string;
-  /** Missing in legacy data means "inherit the built-in adapter"; null paired
-   *  with the current runtimeRevision means the user explicitly disabled
-   *  conversation runtime support. */
-  runtime?: AgentRuntimeConfig | null;
-};
+  "builtIn" | "terminalDetected" | "terminalDetectedPath"
+>> & { id: string };
 
 export const DEFAULT_AGENTS: AgentConfig[] = [
   {
@@ -75,7 +46,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: true,
     icon: claudeIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("claude"),
   },
   {
     id: "codex",
@@ -85,7 +55,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: true,
     icon: codexIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("codex"),
   },
   {
     id: "gemini",
@@ -95,7 +64,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: geminiIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("gemini"),
   },
   {
     id: "grok",
@@ -105,7 +73,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: grokIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("grok"),
   },
   {
     id: "openclaw",
@@ -115,7 +82,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: true,
     icon: openClawIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("openclaw"),
   },
   {
     id: "fastclaw",
@@ -125,7 +91,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: fastClawIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("fastclaw"),
   },
   {
     id: "hermes",
@@ -135,7 +100,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: hermesIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("hermes"),
   },
   {
     id: "opencode",
@@ -145,7 +109,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: opencodeIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("opencode"),
   },
   {
     id: "cursor",
@@ -155,7 +118,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: cursorIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("cursor"),
   },
   {
     id: "kimi",
@@ -165,7 +127,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: kimiIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("kimi"),
   },
   {
     id: "omp",
@@ -175,7 +136,6 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: ompIcon,
     builtIn: true,
-    runtime: defaultAgentRuntime("omp"),
   },
 ];
 
@@ -187,8 +147,6 @@ function storedShape(agent: AgentConfig): StoredAgentConfig {
     args: agent.args,
     enabled: agent.enabled,
     icon: agent.builtIn ? undefined : agent.icon,
-    runtime: agent.runtime ?? null,
-    runtimeRevision: RUNTIME_REVISION,
   };
 }
 
@@ -211,25 +169,15 @@ function normalize(saved: StoredAgentConfig[]): AgentConfig[] {
       const base = defaultById.get(id);
       const stored = savedById.get(id);
       if (base) {
-        // Preserve opt-outs for existing adapters when new ones are introduced.
-        const inherit = !stored || inheritsDefaultAgentRuntime(stored);
         return {
           ...base,
-          ...stored,
+          ...(stored ? storedShape({ ...base, ...stored }) : {}),
           icon: stored?.icon || base.icon,
-          runtime: inherit ? base.runtime : stored.runtime ?? undefined,
-          runtimeRevision: RUNTIME_REVISION,
-          builtIn: true,
+                builtIn: true,
         };
       }
       if (stored) {
         const command = normalizeCustomAgentCommand(stored.id, stored.command);
-        const storedRuntime = stored.runtime?.protocol === "acp"
-          ? {
-              ...stored.runtime,
-              command: normalizeCustomAgentCommand(stored.id, stored.runtime.command),
-            }
-          : stored.runtime;
         return {
           id: stored.id,
           name: stored.name?.trim() || stored.id,
@@ -237,7 +185,6 @@ function normalize(saved: StoredAgentConfig[]): AgentConfig[] {
           args: stored.args ?? "",
           enabled: stored.enabled ?? true,
           icon: stored.icon,
-          runtime: storedRuntime ?? undefined,
           builtIn: false,
         };
       }
@@ -313,8 +260,8 @@ export async function detectAgentConfigs(agents: AgentConfig[]): Promise<AgentCo
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      agents: agents.map(({ id, name, command, args, enabled, builtIn, runtime, runtimeRevision }) => ({
-        id, name, command, args, enabled, builtIn, runtime, runtimeRevision,
+      agents: agents.map(({ id, name, command, args, enabled, builtIn }) => ({
+        id, name, command, args, enabled, builtIn,
       })),
     }),
   });
@@ -328,8 +275,6 @@ export async function detectAgentConfigs(agents: AgentConfig[]): Promise<AgentCo
           terminalDetected: r.terminalInstalled,
           terminalDetectedPath: typeof r.terminalPath === "string" ? r.terminalPath : undefined,
         } : {}),
-        detected: Boolean(r.installed),
-        detectedPath: typeof r.path === "string" ? r.path : undefined,
       },
     ])
   );

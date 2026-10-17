@@ -92,8 +92,8 @@ export interface Theme {
   /**
    * Custom background image, set via the theme editor's upload. It paints
    * behind the whole window; `opacity` is how translucent the chrome surfaces
-   * (pane gaps, sidebar, top bar) and the Bots conversation canvas become so it
-   * shows through. Solid message bubbles, controls and menus preserve local
+   * (pane gaps, sidebar, top bar) become so it shows through.
+   * Controls and menus preserve local
    * contrast. Terminal panes manage transparency through their own palette.
    */
   background?: {

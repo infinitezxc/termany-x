@@ -4,7 +4,6 @@
 //   apps/desktop/src-tauri/resources/server/
 //     ├─ node (or node.exe)        (bundled Node runtime for the host platform)
 //     ├─ server.cjs                (the server, bundled; node-pty left external)
-//     ├─ acp/*.mjs                 (small bridges that reuse user-installed CLIs)
 //     └─ node_modules/node-pty/…   (native addon + prebuilds for the host)
 //
 // Platform-aware: bundles for whatever platform/arch this script runs on, so
@@ -28,8 +27,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Used by both the server and chat agents. OpenClaw's SQLite capability probe
-// rejects early Node 24 releases; keep a tested, patched Node 24 LTS runtime.
+// Keep a tested Node 24 LTS runtime for the bundled server.
 const NODE_VERSION = "24.18.0";
 
 const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
@@ -72,21 +70,6 @@ run(
     `--define:__TERMANY_VERSION__='${JSON.stringify(VERSION)}' ` +
     `--outfile="${path.join(out, "server.cjs")}"`
 );
-
-// 2. Bundle the Claude and Codex ACP protocol bridges without their optional
-// platform binaries. At runtime Termany supplies the absolute path of the
-// user's authenticated CLI, so these stay small and never duplicate an agent.
-const acpDir = path.join(out, "acp");
-mkdirSync(acpDir, { recursive: true });
-for (const [entry, filename] of [
-  ["@agentclientprotocol/claude-agent-acp/dist/index.js", "claude-agent-acp.mjs"],
-  ["@agentclientprotocol/codex-acp", "codex-acp.mjs"],
-]) {
-  run(
-    `npx --no-install esbuild "${serverRequire.resolve(entry)}" --bundle --platform=node ` +
-      `--format=esm --target=node22 --outfile="${path.join(acpDir, filename)}"`
-  );
-}
 
 // 3. Ship node-pty next to the bundle. Keep only the host's prebuild (other
 //    arches' native files just add bloat and, on macOS, break codesign), and

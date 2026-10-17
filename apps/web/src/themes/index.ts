@@ -160,8 +160,8 @@ function applyThemeObject(theme: Theme) {
     return c === "transparent" || c === "none" ? "0 solid transparent" : `1px solid ${c}`;
   };
 
-  // A background image shows through the pane gaps, sidebar/top bar and Bots
-  // conversation canvas, which get alpha-blended below. Terminal panes keep
+  // A background image shows through the pane gaps and sidebar/top bar,
+  // which get alpha-blended below. Terminal panes keep
   // their own contrast contract (see the `background` field in types.ts).
   const bgImage = theme.background?.image;
   const opacity = theme.background?.opacity ?? 1;
@@ -169,7 +169,6 @@ function applyThemeObject(theme: Theme) {
 
   root.style.setProperty("--bg-image", bgImage ? `url("${bgImage}")` : "none");
   root.style.setProperty("--pane-area-bg", blend(colors.bg2));
-  root.style.setProperty("--agent-surface-bg", blend(colors.bg));
   root.style.setProperty("--sidebar-bg", blend(theme.sidebar?.bg ?? colors.bg2));
   root.style.setProperty("--sidebar-border", borderRule(theme.sidebar?.border, colors.border));
   root.style.setProperty("--top-bar", blend(theme.chrome?.topBar ?? colors.bg2));

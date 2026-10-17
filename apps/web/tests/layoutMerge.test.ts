@@ -105,3 +105,19 @@ describe("stepWorkspace", () => {
     assert.equal(stepWorkspace({ workspaces: [], activeWorkspace: "a" }, 1), "a");
   });
 });
+
+it("restores retired conversation panes as terminals without changing pane IDs", async () => {
+  const { restoreTerminalViews } = await import("../src/state/layoutMerge");
+  const workspace = {
+    id: "workspace", title: "Workspace", roots: [{
+      ...page("page"), htabs: [{
+        id: "tab", title: "Tab", focused: "chat",
+        layout: { kind: "leaf", id: "chat", title: "Previous conversation", view: "agent" },
+      }],
+    }],
+  } as unknown as Workspace;
+  const restored = restoreTerminalViews([workspace])[0].roots[0].htabs[0];
+  assert.equal(restored.layout.kind === "leaf" && restored.layout.view, "terminal");
+  assert.equal(restored.layout.id, "chat");
+  assert.equal(restored.focused, "chat");
+});

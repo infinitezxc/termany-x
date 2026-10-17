@@ -9,7 +9,7 @@
  *
  * Kept free of runtime imports so they can be exercised directly.
  */
-import type { TreeNode, Workspace } from "./store";
+import type { Pane, TreeNode, Workspace } from "./store";
 
 /** Just enough of the store for `stepWorkspace` — see store.ts for the rest. */
 interface WorkspaceCursor {
@@ -82,4 +82,17 @@ export function stepWorkspace(s: WorkspaceCursor, dir: 1 | -1): string {
   if (!len) return s.activeWorkspace;
   const start = s.workspaces.findIndex((w) => w.id === s.activeWorkspace);
   return s.workspaces[(((start + dir) % len) + len) % len].id;
+}
+
+/** Older layouts may still contain conversation panes; reopen them as terminals. */
+export function restoreTerminalViews(workspaces: Workspace[]): Workspace[] {
+  const pane = (value: Pane): Pane => value.kind === "split"
+    ? { ...value, children: value.children.map(pane) }
+    : (value.view as string) === "agent" ? { ...value, view: "terminal" } : value;
+  const nodes = (values: TreeNode[]): TreeNode[] => values.map((node) => ({
+    ...node,
+    htabs: node.htabs.map((tab) => ({ ...tab, layout: pane(tab.layout) })),
+    children: nodes(node.children),
+  }));
+  return workspaces.map((workspace) => ({ ...workspace, roots: nodes(workspace.roots) }));
 }

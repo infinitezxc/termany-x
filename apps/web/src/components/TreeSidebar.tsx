@@ -331,7 +331,6 @@ function TreeItem({
 export function TreeSidebar() {
   const { t } = useI18n();
   const ws = useStore(activeWorkspace);
-  const botEnabled = useStore((s) => s.botEnabled);
   const activePage = useStore(activePageId);
   const addRootNode = useStore((s) => s.addRootNode);
   const collapseAll = useStore((s) => s.collapseAll);
@@ -496,15 +495,13 @@ export function TreeSidebar() {
 
   return (
     <div className="sidebar" ref={sidebarRef} style={{ width }}>
-      {!botEnabled && (
-        <button className="sidebar-workspace-switcher" title={ws.title} onClick={toggleWorkspaceSwitcher}>
+      <button className="sidebar-workspace-switcher" title={ws.title} onClick={toggleWorkspaceSwitcher}>
           <span className={`ws-avatar${ws.icon ? " emoji" : ""}`} aria-hidden="true">
             {ws.icon ?? (ws.title.trim().charAt(0).toUpperCase() || "?")}
           </span>
           <span className="sidebar-workspace-name">{ws.title}</span>
           <ChevronIcon dir="down" />
-        </button>
-      )}
+      </button>
       {/* Pages whose own panes are still inside an agent TUI, hoisted above the
           tree. Task state is independent and stays in the traffic-light counts. */}
       {activeEntries.length > 0 && (

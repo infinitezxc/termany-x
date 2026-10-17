@@ -17,11 +17,6 @@ import { claimPage, readWindowPref, writeWindowPref } from "./windows";
 import { stepWorkspace } from "./layoutMerge";
 import { focusPane, focusPaneAfterRemoval, selectHTab } from "./paneFocus";
 import { nextCyclablePaneView, paneWithView } from "./paneViewCycle";
-import { groupControllerSessionId, groupMemberIds, groupMemberSessionId } from "../agentGroupChat";
-import { deliverA2AReply, directA2ASessionId } from "../agentA2A";
-import { agentConversationTopicSessionId, agentConversationTopics, allAgentConversationMessages, groupTopicTitle } from "../agentGroupTopics";
-import { deliverPrivateMessages, unreadAgentMessages, type AgentPrivateMessage } from "../agentPrivateMessages";
-import { removeAgentConversation } from "../agentConversationDeletion";
 
 /**
  * Notion-style model:
@@ -47,85 +42,11 @@ export type PaneView =
   | "terminal"
   | "files"
   | "git"
-  | "agent"
   | "web"
   | "monitor"
   | "history"
   | "usage"
   | "providers";
-
-/** One slice of a reply, in arrival order: prose or a tool invocation.
- *  `status` is the ACP tool-call status: pending | in_progress | completed | failed.
- *  `input`/`output` are display-ready detail strings (command / result),
- *  revealed when the tool row is expanded. */
-export type AgentPart =
-  | { kind: "text"; text: string }
-  | { kind: "tool"; id: string; title: string; status?: string; input?: string; output?: string };
-
-export interface AgentImageAttachment {
-  id: string;
-  kind: "image";
-  /** Local path returned by the clipboard-image endpoint. */
-  path: string;
-  mimeType: string;
-}
-
-export interface AgentFileAttachment {
-  id: string;
-  kind: "file";
-  path: string;
-  name: string;
-}
-
-export interface AgentBotDelivery {
-  id: string;
-  recipient: { id: string; name: string };
-  content: string;
-}
-
-export interface AgentMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-  attachments?: AgentImageAttachment[];
-  files?: AgentFileAttachment[];
-  /** The reply interleaved with the tool calls that produced it (ACP runtimes).
-   *  Only present when at least one tool ran; `content` stays the full text. */
-  parts?: AgentPart[];
-  /** Wall-clock run time, shown on the collapsed tool-call header. */
-  durationMs?: number;
-  /** Why the reply stopped, rendered in place of (or after) the content. */
-  error?: string;
-  /** A safe recovery action offered when the runtime could not answer. */
-  recovery?: { action: "open-agent-terminal"; agentId: string };
-  /** Attribution remains readable even after a Bot is removed from the group. */
-  sender?: { id: string; name: string };
-  recipient?: { id: string; name: string };
-  recipients?: { id: string; name: string }[];
-  /** A proactive private message delivered to the human's Bot inbox. */
-  sourceGroup?: { id: string; name: string };
-  /** A reply produced after another Bot delegated work into this inbox. */
-  sourceBot?: { id: string; name: string };
-  /** The exact request received from sourceBot, shown before the delegated reply. */
-  sourceBotMessage?: string;
-  /** Exact A2A requests emitted by this reply, shown in the source conversation. */
-  botDeliveries?: AgentBotDelivery[];
-  /** Consecutive bubbles produced by one model turn share this id. */
-  replyGroupId?: string;
-  /** Model-generated first message for a Topic, before the human has spoken. */
-  openingGreeting?: boolean;
-  /** Stable snapshot of the message this user message answers. */
-  replyTo?: { id: string; content: string };
-}
-
-export interface AgentGroupTopic {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  agentMessages?: AgentMessage[];
-}
 
 export interface UserProfile {
   nickname: string;
@@ -140,7 +61,7 @@ export type Pane =
       view?: PaneView;
       /** Directory anchor: the pane whose directory this leaf resolves its
        *  own from while it has no shell of its own — the file tree's root,
-       *  an agent's working folder and a terminal's first-spawn cwd all
+       *  a terminal's first-spawn cwd both
        *  follow it. Set at creation to the pane the user was coming from;
        *  anchors form a chain that is walked at spawn (see cwdCandidates). */
       cwdFrom?: string;
@@ -161,24 +82,7 @@ export type Pane =
        *  session-history browser resumes into it — lets a later click on the
        *  same conversation jump here instead of resuming a second copy. */
       agentSession?: { agent: string; sessionId: string };
-      /** Native Agent-pane conversation state. Stored with the layout so a
-       *  conversation survives switching tabs and relaunching the app. */
-      agentMessages?: AgentMessage[];
-      /** "providerId/modelName"; unset follows the current default model. */
-      agentModel?: string;
-      /** ACP session selector picks (model, and whatever else the agent
-       *  offers), as agentId → configId → value. An ACP session always starts
-       *  on the agent's defaults, so these are replayed onto every session the
-       *  pane opens; keyed by agent because the value ids are the agent's own. */
-      agentConfig?: Record<string, Record<string, string>>;
-      /** Agent registry id for an ACP-backed native conversation. Undefined
-       *  means "never chosen" (the pane defaults to the first enabled
-       *  runtime); "" is an explicit Chat-mode choice (Termany's lightweight
-       *  BYOK chat endpoint). */
-      agentRuntime?: string;
-      /** Working folder the user picked explicitly for the ACP agent. Unset
-       *  inherits the source terminal's live cwd (via cwdFrom). */
-      agentCwd?: string;
+
     }
   | {
       kind: "split";
@@ -191,57 +95,6 @@ export type Pane =
        */
       sizes?: number[];
     };
-
-/** A first-class conversation in the Agents workspace. It uses the same leaf
- * shape as an in-page Agent pane so both surfaces share one chat runtime. */
-export type AgentConversation = Extract<Pane, { kind: "leaf" }> & {
-  /** Conversations belong to the same top-level workspace as Pages. Optional
-   * only so layouts saved before Agents gained workspace scoping migrate into
-   * the first workspace without losing their transcript. */
-  workspaceId?: string;
-  createdAt: number;
-  updatedAt: number;
-  agentTags?: string;
-  agentDescription?: string;
-  agentNotifications?: boolean;
-  /** A small, locally stored image; empty/absent uses the runtime's icon. */
-  agentAvatar?: string;
-  /** Topic-backed private chat history. Missing means a legacy transcript in
-   * `agentMessages`, which is materialized on the first Topic operation. */
-  agentTopics?: AgentGroupTopic[];
-  agentActiveTopicId?: string;
-  /** Absent for a private Bot conversation. */
-  agentGroup?: {
-    memberIds: string[];
-    /** Member whose own Agent/Model coordinates unaddressed group work. */
-    leadMemberId?: string;
-    runtimeId?: string;
-    topics?: AgentGroupTopic[];
-    activeTopicId?: string;
-  };
-  agentPrivateMessages?: AgentPrivateMessage[];
-  agentReadAt?: number;
-  /** Number of completed assistant messages not yet viewed in this conversation.
-   * Kept explicitly so ordinary replies, group replies and private deliveries
-   * share one unread model without reconstructing UI visibility from timestamps. */
-  agentUnread?: number;
-  /** Sidebar organization only; unrelated to multi-Bot group chats. */
-  agentFolderId?: string;
-  agentPinned?: boolean;
-  agentSortOrder?: number;
-};
-
-export interface AgentConversationFolder {
-  id: string;
-  title: string;
-  createdAt: number;
-  collapsed?: boolean;
-}
-
-export type AgentConversationMeta = Pick<
-  AgentConversation,
-  "title" | "agentTags" | "agentDescription" | "agentNotifications" | "agentAvatar"
->;
 
 /** Which side of a target pane a drag is dropping onto. */
 export type DropEdge = "left" | "right" | "top" | "bottom";
@@ -291,17 +144,10 @@ export interface Workspace {
   /** Emoji icon; when unset the UI falls back to the title's first letter. */
   icon?: string;
   roots: TreeNode[];
-  /** User-created sections in the Agents inbox. */
-  agentConversationFolders?: AgentConversationFolder[];
-  /** Optional custom label for the built-in section that holds unfiled conversations. */
-  agentUngroupedTitle?: string;
-  agentUngroupedCollapsed?: boolean;
 }
 
 interface State {
   workspaces: Workspace[];
-  /** Conversations shown in the top-level Agents workspace. */
-  agentConversations: AgentConversation[];
   userProfile: UserProfile;
   setUserProfile: (patch: Partial<UserProfile>) => void;
   /**
@@ -326,31 +172,6 @@ interface State {
   takenPages: Set<string>;
   setTakenPages: (taken: Set<string>) => void;
 
-  addAgentConversation: (runtimeId?: string, title?: string) => string;
-  addAgentGroup: (title: string, memberIds: string[], workspaceId: string) => string | null;
-  setAgentGroupMembers: (id: string, memberIds: string[]) => void;
-  setAgentGroupLeadMember: (id: string, memberId: string) => void;
-  addAgentTopic: (id: string) => string | null;
-  setActiveAgentTopic: (id: string, topicId: string) => void;
-  renameAgentTopic: (id: string, topicId: string, title: string) => void;
-  deleteAgentTopic: (id: string, topicId: string) => void;
-  setAgentTopicMessages: (id: string, topicId: string, messages: AgentMessage[]) => void;
-  deleteAgentConversation: (id: string) => void;
-  setAgentConversationMeta: (id: string, patch: Partial<AgentConversationMeta>) => void;
-  addAgentConversationFolder: (workspaceId: string, title: string, beforeFolderId?: string) => string;
-  renameAgentConversationFolder: (workspaceId: string, folderId: string, title: string) => void;
-  moveAgentConversationFolder: (workspaceId: string, folderId: string, direction: -1 | 1) => void;
-  deleteAgentConversationFolder: (workspaceId: string, folderId: string) => void;
-  setAgentUngroupedTitle: (workspaceId: string, title: string) => void;
-  setAgentUngroupedCollapsed: (workspaceId: string, collapsed: boolean) => void;
-  setAgentConversationFolderCollapsed: (workspaceId: string, folderId: string, collapsed: boolean) => void;
-  setAgentConversationPinned: (id: string, pinned: boolean) => void;
-  organizeAgentConversations: (updates: Array<Pick<AgentConversation,
-    "id" | "agentFolderId" | "agentPinned" | "agentSortOrder">>) => void;
-  deliverAgentPrivateMessages: (groupId: string, messages: AgentPrivateMessage[]) => void;
-  deliverAgentA2AReply: (recipientId: string, message: AgentMessage) => void;
-  markAgentConversationRead: (id: string) => void;
-
   /** Active theme id (see themes.ts). Persisted to localStorage. */
   theme: string;
   setTheme: (id: string) => void;
@@ -364,10 +185,6 @@ interface State {
   /** Whether the right quick-action rail is hidden. */
   railCollapsed: boolean;
   toggleRail: () => void;
-
-  /** Whether the Bot workspace and app navigation are enabled. Persisted locally. */
-  botEnabled: boolean;
-  setBotEnabled: (enabled: boolean) => void;
 
   /** Which quick actions appear in the right rail. Persisted locally. */
   railVisibility: RailVisibility;
@@ -458,11 +275,6 @@ interface State {
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
   setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
-  setAgentMessages: (leafId: string, messages: AgentMessage[], removedMessageIds?: readonly string[]) => void;
-  setAgentModel: (leafId: string, model: string) => void;
-  setAgentConfigOption: (leafId: string, agentId: string, configId: string, value: string) => void;
-  setAgentRuntime: (leafId: string, runtimeId: string) => void;
-  setAgentCwd: (leafId: string, cwd: string) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
@@ -521,39 +333,9 @@ const id = () => crypto.randomUUID();
 // Rearranging (movePane) doesn't change the count, so it isn't gated by this.
 const MAX_PANES_PER_TAB = 6;
 
-// The chat UI renders these in pages of 40, so retaining a deeper rolling
-// transcript no longer means mounting every historical message at once.
-const MAX_PERSISTED_AGENT_MESSAGES = 400;
 
 function makeLeaf(title = "pane 1", cwdFrom?: string): Pane & { kind: "leaf" } {
   return { kind: "leaf", id: id(), title, cwdFrom };
-}
-
-function makeAgentConversation(runtimeId?: string, workspaceId?: string, title = "New bot"): AgentConversation {
-  const now = Date.now();
-  const topicId = id();
-  return {
-    ...makeLeaf(title),
-    workspaceId,
-    view: "agent",
-    agentRuntime: runtimeId,
-    agentNotifications: true,
-    agentTopics: [{ id: topicId, title: "", createdAt: now, updatedAt: now }],
-    agentActiveTopicId: topicId,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function withAgentTopics(
-  conversation: AgentConversation,
-  topics: AgentGroupTopic[],
-  activeTopicId: string | undefined
-): AgentConversation {
-  const base = { ...conversation, agentMessages: undefined };
-  return conversation.agentGroup
-    ? { ...base, agentGroup: { ...conversation.agentGroup, topics, activeTopicId } }
-    : { ...base, agentTopics: topics, agentActiveTopicId: activeTopicId };
 }
 
 /** Default pane labels are scoped to a tab and keep increasing even if an
@@ -1058,20 +840,6 @@ function updateLeafEverywhere(
   return workspaces.map((workspace) => ({ ...workspace, roots: updateNodes(workspace.roots) }));
 }
 
-/** Apply one of AgentPane's leaf mutations to a first-class conversation while
- * preserving the timestamps used by the conversation list. */
-function updateAgentConversation(
-  conversations: AgentConversation[],
-  leafId: string,
-  fn: (leaf: AgentConversation) => Pane & { kind: "leaf" }
-): AgentConversation[] {
-  return conversations.map((conversation) =>
-    conversation.id === leafId
-      ? { ...conversation, ...fn(conversation), updatedAt: Date.now() }
-      : conversation
-  );
-}
-
 /**
  * Locate the workspace / page / tab a leaf lives in. Leaf ids are globally
  * unique (same assumption updateLeafEverywhere leans on), so the first hit is
@@ -1142,7 +910,6 @@ function closeLeaf(s: State, leafId: string): Partial<State> {
 
 export const useStore = create<State>((set, get) => ({
   workspaces: [first],
-  agentConversations: [],
   userProfile: { nickname: "" },
   setUserProfile: (patch) => set((state) => ({
     userProfile: { ...state.userProfile, ...patch },
@@ -1183,16 +950,6 @@ export const useStore = create<State>((set, get) => ({
   railCollapsed: false,
   toggleRail: () => set((s) => ({ railCollapsed: !s.railCollapsed })),
 
-  botEnabled: (() => {
-    try { return localStorage.getItem("termany.bot-enabled") !== "false"; }
-    catch { return true; }
-  })(),
-  setBotEnabled: (botEnabled) => {
-    try { localStorage.setItem("termany.bot-enabled", String(botEnabled)); }
-    catch { /* The in-memory preference still works when storage is blocked. */ }
-    set({ botEnabled });
-  },
-
   railVisibility: loadRailVisibility(),
   setRailItemVisible: (id, visible) =>
     set((s) => {
@@ -1221,309 +978,6 @@ export const useStore = create<State>((set, get) => ({
   activeNodes: {},
   takenPages: new Set<string>(),
   setTakenPages: (taken) => set({ takenPages: taken }),
-
-  addAgentConversation: (runtimeId, title) => {
-    const conversation = makeAgentConversation(runtimeId, get().activeWorkspace, title);
-    set((s) => ({ agentConversations: [conversation, ...s.agentConversations] }));
-    return conversation.id;
-  },
-
-  deliverAgentPrivateMessages: (groupId, messages) => set((state) => ({
-    agentConversations: deliverPrivateMessages(state.agentConversations, groupId, messages),
-  })),
-
-  deliverAgentA2AReply: (recipientId, message) => set((state) => ({
-    agentConversations: deliverA2AReply(state.agentConversations, recipientId, message),
-  })),
-
-  markAgentConversationRead: (id) => set((state) => ({
-    agentConversations: state.agentConversations.map((conversation) => {
-      if (conversation.id !== id) return conversation;
-      const last = Math.max(conversation.agentReadAt ?? 0, ...allAgentConversationMessages(conversation)
-        .filter((message) => message.role === "assistant").map((message) => message.createdAt));
-      if (!conversation.agentUnread && last <= (conversation.agentReadAt ?? 0)) return conversation;
-      return { ...conversation, agentUnread: 0, agentReadAt: last };
-    }),
-  })),
-
-  addAgentGroup: (title, memberIds, workspaceId) => {
-    const state = get();
-    const ids = groupMemberIds(memberIds, state.agentConversations, workspaceId, state.workspaces[0]?.id ?? "");
-    if (!title.trim() || ids.length < 2 || !state.workspaces.some((workspace) => workspace.id === workspaceId)) return null;
-    const topicId = id();
-    const now = Date.now();
-    const conversation = {
-      ...makeAgentConversation(undefined, workspaceId, title.trim()),
-      agentTopics: undefined,
-      agentActiveTopicId: undefined,
-      agentGroup: {
-        memberIds: ids,
-        leadMemberId: ids[0],
-        topics: [{ id: topicId, title: "", createdAt: now, updatedAt: now }],
-        activeTopicId: topicId,
-      },
-    };
-    set((s) => ({ agentConversations: [conversation, ...s.agentConversations] }));
-    return conversation.id;
-  },
-
-  setAgentGroupMembers: (id, memberIds) => {
-    const state = get();
-    const group = state.agentConversations.find((conversation) => conversation.id === id);
-    if (!group?.agentGroup) return;
-    const firstWorkspaceId = state.workspaces[0]?.id ?? "";
-    const ids = groupMemberIds(memberIds, state.agentConversations, group.workspaceId ?? firstWorkspaceId, firstWorkspaceId);
-    if (ids.length < 2) return;
-    const leadMemberId = group.agentGroup.leadMemberId && ids.includes(group.agentGroup.leadMemberId)
-      ? group.agentGroup.leadMemberId
-      : ids[0];
-    if (leadMemberId !== group.agentGroup.leadMemberId) {
-      const topics = group.agentGroup.topics?.length ? group.agentGroup.topics : [undefined];
-      for (const topic of topics) disposePaneSessions(groupControllerSessionId(id, topic?.id));
-    }
-    for (const memberId of group.agentGroup.memberIds) {
-      if (ids.includes(memberId)) continue;
-      const topics = group.agentGroup.topics?.length ? group.agentGroup.topics : [undefined];
-      for (const topic of topics) disposePaneSessions(groupMemberSessionId(id, memberId, topic?.id));
-    }
-    set((s) => ({ agentConversations: s.agentConversations.map((conversation) =>
-      conversation.id === id ? {
-        ...conversation,
-        agentGroup: { ...conversation.agentGroup, memberIds: ids, leadMemberId },
-        updatedAt: Date.now(),
-      } : conversation
-    ) }));
-  },
-
-  setAgentGroupLeadMember: (id, memberId) => {
-    const group = get().agentConversations.find((conversation) => conversation.id === id);
-    if (!group?.agentGroup || !group.agentGroup.memberIds.includes(memberId) || group.agentGroup.leadMemberId === memberId) return;
-    const topics = group.agentGroup.topics?.length ? group.agentGroup.topics : [undefined];
-    for (const topic of topics) disposePaneSessions(groupControllerSessionId(id, topic?.id));
-    set((state) => ({ agentConversations: state.agentConversations.map((conversation) =>
-      conversation.id === id && conversation.agentGroup ? {
-        ...conversation,
-        agentGroup: { ...conversation.agentGroup, leadMemberId: memberId },
-        updatedAt: Date.now(),
-      } : conversation
-    ) }));
-  },
-
-  addAgentTopic: (conversationId) => {
-    const current = get().agentConversations.find((conversation) => conversation.id === conversationId);
-    if (!current) return null;
-    const topicId = id();
-    const now = Date.now();
-    const topics = agentConversationTopics(current);
-    set((state) => ({
-      agentConversations: state.agentConversations.map((conversation) => conversation.id === conversationId
-        ? withAgentTopics(conversation, [...topics, { id: topicId, title: "", createdAt: now, updatedAt: now }], topicId)
-        : conversation),
-    }));
-    return topicId;
-  },
-
-  setActiveAgentTopic: (conversationId, topicId) => set((state) => ({
-    agentConversations: state.agentConversations.map((conversation) => {
-      if (conversation.id !== conversationId) return conversation;
-      const topics = agentConversationTopics(conversation);
-      if (!topics.some((topic) => topic.id === topicId)) return conversation;
-      return withAgentTopics(conversation, topics, topicId);
-    }),
-  })),
-
-  renameAgentTopic: (conversationId, topicId, title) => {
-    const nextTitle = title.trim();
-    if (!nextTitle) return;
-    set((state) => ({
-      agentConversations: state.agentConversations.map((conversation) => {
-        if (conversation.id !== conversationId) return conversation;
-        const topics = agentConversationTopics(conversation);
-        if (!topics.some((topic) => topic.id === topicId)) return conversation;
-        const activeTopicId = conversation.agentGroup?.activeTopicId ?? conversation.agentActiveTopicId;
-        return withAgentTopics(
-          conversation,
-          topics.map((topic) => topic.id === topicId ? { ...topic, title: nextTitle } : topic),
-          activeTopicId
-        );
-      }),
-    }));
-  },
-
-  deleteAgentTopic: (conversationId, topicId) => {
-    const current = get().agentConversations.find((conversation) => conversation.id === conversationId);
-    if (!current) return;
-    const topics = agentConversationTopics(current);
-    if (topics.length <= 1 || !topics.some((topic) => topic.id === topicId)) return;
-    if (current.agentGroup) {
-      disposePaneSessions(groupControllerSessionId(conversationId, topicId));
-      current.agentGroup.memberIds.forEach((memberId) =>
-        disposePaneSessions(groupMemberSessionId(conversationId, memberId, topicId))
-      );
-    } else {
-      disposePaneSessions(agentConversationTopicSessionId(conversationId, topicId));
-      get().agentConversations.forEach((conversation) => {
-        if (conversation.id !== conversationId && !conversation.agentGroup) {
-          disposePaneSessions(directA2ASessionId(conversationId, conversation.id, topicId));
-        }
-      });
-    }
-    set((state) => ({
-      agentConversations: state.agentConversations.map((conversation) => {
-        if (conversation.id !== conversationId) return conversation;
-        const remaining = agentConversationTopics(conversation).filter((topic) => topic.id !== topicId);
-        if (remaining.length === 0) return conversation;
-        const previousActiveTopicId = conversation.agentGroup?.activeTopicId ?? conversation.agentActiveTopicId;
-        const activeTopicId = previousActiveTopicId === topicId
-          ? [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0].id
-          : previousActiveTopicId;
-        return withAgentTopics(conversation, remaining, activeTopicId);
-      }),
-    }));
-  },
-
-  setAgentTopicMessages: (conversationId, topicId, messages) => set((state) => ({
-    agentConversations: state.agentConversations.map((conversation) => {
-      if (conversation.id !== conversationId) return conversation;
-      const topics = agentConversationTopics(conversation);
-      const previous = topics.find((topic) => topic.id === topicId);
-      if (!previous) return conversation;
-      const storedIds = new Set((previous.agentMessages ?? []).map((message) => message.id));
-      const next = messages.slice(-MAX_PERSISTED_AGENT_MESSAGES)
-        .map((message) => ({ ...message, content: message.content.slice(0, 12_000) }));
-      const added = next.filter((message) => message.role === "assistant" && !storedIds.has(message.id)).length;
-      const updatedAt = next.reduce((latest, message) => Math.max(latest, message.createdAt), previous.updatedAt);
-      const nextConversation = {
-        ...conversation,
-        updatedAt,
-        agentUnread: (conversation.agentUnread ?? unreadAgentMessages(conversation)) + added,
-      };
-      return withAgentTopics(
-        nextConversation,
-        topics.map((topic) => topic.id === topicId ? {
-          ...topic,
-          title: topic.title || groupTopicTitle(next),
-          updatedAt,
-          agentMessages: next,
-        } : topic),
-        conversation.agentGroup?.activeTopicId ?? conversation.agentActiveTopicId ?? topicId
-      );
-    }),
-  })),
-
-  deleteAgentConversation: (conversationId) => {
-    const result = removeAgentConversation(get().agentConversations, conversationId);
-    if (result.sessionIds.length === 0) return;
-    result.sessionIds.forEach(disposePaneSessions);
-    set({ agentConversations: result.conversations });
-  },
-
-  setAgentConversationMeta: (conversationId, patch) =>
-    set((s) => ({
-      agentConversations: s.agentConversations.map((conversation) =>
-        conversation.id === conversationId
-          ? { ...conversation, ...patch, updatedAt: Date.now() }
-          : conversation
-      ),
-    })),
-
-  addAgentConversationFolder: (workspaceId, title, beforeFolderId) => {
-    const folderId = id();
-    set((state) => ({
-      workspaces: inWs(state.workspaces, workspaceId, (workspace) => {
-        const folders = workspace.agentConversationFolders ?? [];
-        const beforeIndex = beforeFolderId
-          ? folders.findIndex((folder) => folder.id === beforeFolderId)
-          : -1;
-        const index = beforeIndex < 0 ? folders.length : beforeIndex;
-        const folder = {
-          id: folderId,
-          title: title.trim(),
-          createdAt: Date.now(),
-        };
-        return {
-          ...workspace,
-          agentConversationFolders: [...folders.slice(0, index), folder, ...folders.slice(index)],
-        };
-      }),
-    }));
-    return folderId;
-  },
-
-  renameAgentConversationFolder: (workspaceId, folderId, title) => set((state) => ({
-    workspaces: inWs(state.workspaces, workspaceId, (workspace) => ({
-      ...workspace,
-      agentConversationFolders: (workspace.agentConversationFolders ?? []).map((folder) =>
-        folder.id === folderId ? { ...folder, title: title.trim() } : folder
-      ),
-    })),
-  })),
-
-  moveAgentConversationFolder: (workspaceId, folderId, direction) => set((state) => ({
-    workspaces: inWs(state.workspaces, workspaceId, (workspace) => {
-      const folders = workspace.agentConversationFolders ?? [];
-      const index = folders.findIndex((folder) => folder.id === folderId);
-      const targetIndex = index + direction;
-      if (index < 0 || targetIndex < 0 || targetIndex >= folders.length) return workspace;
-      const reordered = [...folders];
-      [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
-      return { ...workspace, agentConversationFolders: reordered };
-    }),
-  })),
-
-  deleteAgentConversationFolder: (workspaceId, folderId) => set((state) => {
-    const firstWorkspaceId = state.workspaces[0]?.id ?? "";
-    return {
-      workspaces: inWs(state.workspaces, workspaceId, (workspace) => ({
-        ...workspace,
-        agentConversationFolders: (workspace.agentConversationFolders ?? []).filter((folder) => folder.id !== folderId),
-      })),
-      agentConversations: state.agentConversations.map((conversation) =>
-        (conversation.workspaceId ?? firstWorkspaceId) === workspaceId && conversation.agentFolderId === folderId
-          ? { ...conversation, agentFolderId: undefined, agentSortOrder: undefined }
-          : conversation
-      ),
-    };
-  }),
-
-  setAgentUngroupedTitle: (workspaceId, title) => set((state) => ({
-    workspaces: inWs(state.workspaces, workspaceId, (workspace) => ({
-      ...workspace,
-      agentUngroupedTitle: title.trim(),
-    })),
-  })),
-
-  setAgentUngroupedCollapsed: (workspaceId, collapsed) => set((state) => ({
-    workspaces: inWs(state.workspaces, workspaceId, (workspace) => ({
-      ...workspace,
-      agentUngroupedCollapsed: collapsed,
-    })),
-  })),
-
-  setAgentConversationFolderCollapsed: (workspaceId, folderId, collapsed) => set((state) => ({
-    workspaces: inWs(state.workspaces, workspaceId, (workspace) => ({
-      ...workspace,
-      agentConversationFolders: (workspace.agentConversationFolders ?? []).map((folder) =>
-        folder.id === folderId ? { ...folder, collapsed } : folder
-      ),
-    })),
-  })),
-
-  setAgentConversationPinned: (conversationId, pinned) => set((state) => ({
-    agentConversations: state.agentConversations.map((conversation) =>
-      conversation.id === conversationId ? { ...conversation, agentPinned: pinned } : conversation
-    ),
-  })),
-
-  organizeAgentConversations: (updates) => set((state) => {
-    const byId = new Map(updates.map((update) => [update.id, update]));
-    return {
-      agentConversations: state.agentConversations.map((conversation) => {
-        const update = byId.get(conversation.id);
-        return update ? { ...conversation, ...update } : conversation;
-      }),
-    };
-  }),
 
   addWorkspace: (init) => {
     const ws = initialWorkspace(init?.title?.trim() || `ws ${get().workspaces.length + 1}`);
@@ -1601,9 +1055,6 @@ export const useStore = create<State>((set, get) => ({
     const workspaces = s.workspaces.filter((w) => w.id !== wsId);
     set({
       workspaces,
-      agentConversations: s.agentConversations.filter(
-        (conversation) => (conversation.workspaceId ?? s.workspaces[0]?.id) !== wsId
-      ),
     });
     // setActiveWorkspace settles which page of the survivor this window lands
     // on, skipping whatever the other windows hold.
@@ -2034,90 +1485,6 @@ export const useStore = create<State>((set, get) => ({
             return { ...h, layout: tag(h.layout) };
           }),
         })),
-      })),
-    })),
-
-  setAgentMessages: (leafId, messages, removedMessageIds = []) =>
-    set((s) => {
-      const removed = new Set(removedMessageIds);
-      const nextMessages = (leaf: Pane & { kind: "leaf" }) =>
-        // Keep state persistence bounded while retaining enough history for
-        // the paginated chat view.
-        // A group can deliver a private message while this direct reply streams.
-        // Keep those independently delivered messages when saving the reply.
-        [...messages, ...(leaf.agentMessages ?? []).filter((item) =>
-          (item.sourceGroup || item.sourceBot) && !removed.has(item.id) &&
-          !messages.some((next) => next.id === item.id)
-        )].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_PERSISTED_AGENT_MESSAGES).map((item) => ({
-          ...item,
-          content: item.content.slice(0, 12_000),
-        }));
-      const update = (leaf: Pane & { kind: "leaf" }) => ({ ...leaf, agentMessages: nextMessages(leaf) });
-      return {
-        workspaces: updateLeafEverywhere(s.workspaces, leafId, update),
-        agentConversations: updateAgentConversation(s.agentConversations, leafId, (conversation) => {
-          const storedIds = new Set((conversation.agentMessages ?? []).map((message) => message.id));
-          const next = nextMessages(conversation);
-          const added = next.filter((message) => message.role === "assistant" && !storedIds.has(message.id)).length;
-          return {
-            ...conversation,
-            agentMessages: next,
-            agentUnread: (conversation.agentUnread ?? unreadAgentMessages(conversation)) + added,
-          };
-        }),
-      };
-    }),
-
-  setAgentModel: (leafId, model) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({ ...leaf, agentModel: model })),
-      agentConversations: updateAgentConversation(s.agentConversations, leafId, (leaf) => ({
-        ...leaf,
-        agentModel: model,
-      })),
-    })),
-
-  setAgentConfigOption: (leafId, agentId, configId, value) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
-        ...leaf,
-        agentConfig: {
-          ...leaf.agentConfig,
-          [agentId]: { ...leaf.agentConfig?.[agentId], [configId]: value },
-        },
-      })),
-      agentConversations: updateAgentConversation(s.agentConversations, leafId, (leaf) => ({
-        ...leaf,
-        agentConfig: {
-          ...leaf.agentConfig,
-          [agentId]: { ...leaf.agentConfig?.[agentId], [configId]: value },
-        },
-      })),
-    })),
-
-  setAgentRuntime: (leafId, runtimeId) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
-        ...leaf,
-        // Keep "" distinct from undefined: it records an explicit Chat choice.
-        agentRuntime: runtimeId,
-      })),
-      agentConversations: updateAgentConversation(s.agentConversations, leafId, (leaf) => ({
-        ...leaf,
-        agentRuntime: runtimeId,
-        ...(leaf.agentGroup ? { agentGroup: { ...leaf.agentGroup, runtimeId } } : {}),
-      })),
-    })),
-
-  setAgentCwd: (leafId, cwd) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
-        ...leaf,
-        agentCwd: cwd || undefined,
-      })),
-      agentConversations: updateAgentConversation(s.agentConversations, leafId, (leaf) => ({
-        ...leaf,
-        agentCwd: cwd || undefined,
       })),
     })),
 
@@ -2555,8 +1922,6 @@ export function focusedHostSession(s: State): string | undefined {
 
 /** Find a leaf by id anywhere — anchors can point across pages and workspaces. */
 function findLeafGlobal(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
-  const conversation = s.agentConversations.find((item) => item.id === leafId);
-  if (conversation) return conversation;
   const inNodes = (nodes: TreeNode[]): (Pane & { kind: "leaf" }) | undefined => {
     for (const n of nodes) {
       for (const h of n.htabs) {

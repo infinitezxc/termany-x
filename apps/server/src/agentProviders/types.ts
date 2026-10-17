@@ -2,7 +2,7 @@
  * Model providers for the agent CLIs installed on this machine.
  *
  * Distinct from config.ts, which holds the providers Termany itself calls (the
- * group-chat bot, theme generation). These write into *other* applications'
+ * theme generation). These write into *other* applications'
  * configuration, so Claude Code, the Codex desktop app and anything else the
  * user runs outside Termany pick the same provider up.
  *

@@ -9,7 +9,6 @@ import {
   ActivityIcon,
   AgentIcon,
   ChartIcon,
-  ChatIcon,
   FilesIcon,
   GearIcon,
   GitBranchIcon,
@@ -26,7 +25,6 @@ const RAIL_ITEMS: Array<{ view: PaneView; icon: () => JSX.Element }> = [
   { view: "terminal", icon: TerminalIcon },
   { view: "files", icon: FilesIcon },
   { view: "git", icon: GitBranchIcon },
-  { view: "agent", icon: ChatIcon },
   { view: "web", icon: WebIcon },
   { view: "monitor", icon: ActivityIcon },
 ];
@@ -61,10 +59,9 @@ export function SideRail({
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
-  const setAgentRuntime = useStore((s) => s.setAgentRuntime);
   const railVisibility = useStore((s) => s.railVisibility);
   const { t } = useI18n();
-  const agents = useAgentConfigs().filter((agent) => agent.enabled || agent.runtime);
+  const agents = useAgentConfigs().filter((agent) => agent.enabled);
   const agentsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -104,16 +101,6 @@ export function SideRail({
     onAgentsOpenChange(false);
   };
 
-  const openAgent = (agent: AgentConfig) => {
-    if (!agent.runtime) {
-      runAgent(agent);
-      return;
-    }
-    const paneId = addPane("agent", agent.name);
-    if (paneId) setAgentRuntime(paneId, agent.id);
-    onAgentsOpenChange(false);
-  };
-
   const openAgentSettings = () => {
     onAgentsOpenChange(false);
     onOpenAgentsSettings();
@@ -146,7 +133,7 @@ export function SideRail({
             <div className="agent-menu" ref={menuRef}>
               {agents.map((agent) => (
                 <div key={agent.id} className="agent-menu-entry">
-                  <button className="agent-menu-item" onClick={() => openAgent(agent)}>
+                  <button className="agent-menu-item" onClick={() => runAgent(agent)}>
                     {agent.icon ? (
                       <img className="agent-menu-icon" src={agent.icon} alt="" aria-hidden="true" />
                     ) : (
@@ -155,17 +142,8 @@ export function SideRail({
                       </span>
                     )}
                     <span>{agent.name}</span>
-                    {agent.runtime && <ChatIcon />}
                   </button>
-                  {agent.runtime && agent.enabled && agentCommand(agent) && (
-                    <button
-                      className="agent-menu-terminal"
-                      title={`${t("agents.openTerminal")}: ${agent.name}`}
-                      onClick={() => runAgent(agent)}
-                    >
-                      <TerminalIcon />
-                    </button>
-                  )}
+
                 </div>
               ))}
               {agents.length === 0 && <div className="agent-menu-empty">{t("agents.noEnabled")}</div>}

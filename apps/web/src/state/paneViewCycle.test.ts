@@ -7,8 +7,7 @@ test("Cmd+E follows the full pane-menu order when every view is visible", () => 
   assert.equal(nextCyclablePaneView(undefined), "files");
   assert.equal(nextCyclablePaneView("terminal"), "files");
   assert.equal(nextCyclablePaneView("files"), "git");
-  assert.equal(nextCyclablePaneView("git"), "agent");
-  assert.equal(nextCyclablePaneView("agent"), "web");
+  assert.equal(nextCyclablePaneView("git"), "web");
   assert.equal(nextCyclablePaneView("web"), "monitor");
   assert.equal(nextCyclablePaneView("monitor"), "providers");
   assert.equal(nextCyclablePaneView("providers"), "history");
@@ -38,7 +37,6 @@ test("Cmd+E does nothing when no pane view is enabled", () => {
     terminal: false,
     files: false,
     git: false,
-    agent: false,
     web: false,
     monitor: false,
     providers: false,

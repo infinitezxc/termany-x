@@ -2,51 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import en from "./locales/en";
 import zhCN from "./locales/zh-CN";
-import zhTW from "./locales/zh-TW";
-import ja from "./locales/ja";
-import ko from "./locales/ko";
-import es from "./locales/es";
-import fr from "./locales/fr";
-import de from "./locales/de";
-import ptBR from "./locales/pt-BR";
-import ru from "./locales/ru";
-import it from "./locales/it";
-import hi from "./locales/hi";
-import tr from "./locales/tr";
-import pl from "./locales/pl";
-import uk from "./locales/uk";
-import cs from "./locales/cs";
-import nl from "./locales/nl";
-import sv from "./locales/sv";
-import vi from "./locales/vi";
-import id from "./locales/id";
-import th from "./locales/th";
-
 const STORAGE_KEY = "termany.language";
 const LANGUAGE_CHANGED_EVENT = "termany:language-changed";
 
-export type Language =
-  | "en"
-  | "zh-CN"
-  | "zh-TW"
-  | "ja"
-  | "ko"
-  | "es"
-  | "fr"
-  | "de"
-  | "pt-BR"
-  | "ru"
-  | "it"
-  | "hi"
-  | "tr"
-  | "pl"
-  | "uk"
-  | "cs"
-  | "nl"
-  | "sv"
-  | "vi"
-  | "id"
-  | "th";
+export type Language = "en" | "zh-CN";
 
 /**
  * Every shipped language, in the order the Settings picker shows them. Labels
@@ -56,25 +15,6 @@ export type Language =
 export const LANGUAGES: ReadonlyArray<{ value: Language; label: string }> = [
   { value: "en", label: "English" },
   { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
-  { value: "ja", label: "日本語" },
-  { value: "ko", label: "한국어" },
-  { value: "es", label: "Español" },
-  { value: "fr", label: "Français" },
-  { value: "de", label: "Deutsch" },
-  { value: "pt-BR", label: "Português (Brasil)" },
-  { value: "ru", label: "Русский" },
-  { value: "it", label: "Italiano" },
-  { value: "hi", label: "हिन्दी" },
-  { value: "tr", label: "Türkçe" },
-  { value: "pl", label: "Polski" },
-  { value: "uk", label: "Українська" },
-  { value: "cs", label: "Čeština" },
-  { value: "nl", label: "Nederlands" },
-  { value: "sv", label: "Svenska" },
-  { value: "vi", label: "Tiếng Việt" },
-  { value: "id", label: "Bahasa Indonesia" },
-  { value: "th", label: "ไทย" },
 ];
 
 /** English is the source locale; the rest may lag behind it and fall back. */
@@ -84,53 +24,16 @@ type Dictionary = Partial<Record<TranslationKey, string>>;
 export const dictionaries: Record<Language, Dictionary> = {
   en,
   "zh-CN": zhCN,
-  "zh-TW": zhTW,
-  ja,
-  ko,
-  es,
-  fr,
-  de,
-  "pt-BR": ptBR,
-  ru,
-  it,
-  hi,
-  tr,
-  pl,
-  uk,
-  cs,
-  nl,
-  sv,
-  vi,
-  id,
-  th,
 };
 
 const SUPPORTED = new Set<string>(LANGUAGES.map((l) => l.value));
 
-/**
- * Map an arbitrary BCP-47 tag onto a shipped language. Exact match wins, then
- * the base subtag ("fr-CA" → "fr"). Chinese is special-cased: the script, not
- * the region, decides between Simplified and Traditional, so Hong Kong/Macau
- * and an explicit `Hant` both land on zh-TW.
- */
+/** Map English and Chinese BCP-47 tags onto the two shipped locales. */
 export function matchLanguage(tag: string): Language | null {
-  const normalized = tag.trim();
-  if (!normalized) return null;
-  const lower = normalized.toLowerCase();
-
-  if (lower.startsWith("zh")) {
-    return /hant|-tw|-hk|-mo/.test(lower) ? "zh-TW" : "zh-CN";
-  }
-  // Brazilian is the only Portuguese we ship, so pt-PT lands here too — closer
-  // than falling through to English. Revisit if a pt-PT dictionary is added.
-  if (lower.startsWith("pt")) return "pt-BR";
-
-  const exact = LANGUAGES.find((l) => l.value.toLowerCase() === lower);
-  if (exact) return exact.value;
-
-  const base = lower.split("-")[0];
-  const byBase = LANGUAGES.find((l) => l.value.toLowerCase().split("-")[0] === base);
-  return byBase?.value ?? null;
+  const base = tag.trim().toLowerCase().split("-")[0];
+  if (base === "zh") return "zh-CN";
+  if (base === "en") return "en";
+  return null;
 }
 
 function normalizeLanguage(value: string | null | undefined): Language {
@@ -142,7 +45,7 @@ function normalizeLanguage(value: string | null | undefined): Language {
 /**
  * The language to use when nothing has been picked yet. `navigator.languages`
  * is ordered by preference, so the first entry we actually ship wins — a
- * fr-CA/en user gets French, not English.
+ * fr-CA/en user gets English.
  */
 function detectLanguage(): Language {
   try {

@@ -54,7 +54,6 @@ import {
   TerminalIcon,
   WebIcon,
 } from "./icons";
-import { AgentPane } from "./AgentPane";
 import { SystemMonitor } from "./SystemMonitor";
 import { SshConnections } from "./SshConnections";
 import { TerminalPane } from "./TerminalPane";
@@ -498,8 +497,7 @@ function PaneSlot({
             onUrlChange={(url) => setPaneWebUrl(leaf.id, url)}
             focused={focused}
           />
-        ) : leaf.view === "agent" ? (
-          <AgentPane leaf={leaf} focused={focused} />
+
         ) : (
           <TerminalPane id={leaf.id} sshTarget={leaf.sshTarget} />
         )}

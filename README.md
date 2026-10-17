@@ -43,28 +43,7 @@ and OpenClaw are enabled by default; enable the rest with one toggle. Point an a
 different binary, or add your own agent, in Settings → Agents. **Detect** probes your machine
 and lists what it finds.
 
-Claude and Codex Bots use your locally installed and authenticated official CLI. If one is
-missing, Termany links you to its official installer from Settings → Agents. Termany ships the
-small ACP bridge and the Node runtime needed to run it, so Bot conversations do not require a
-separate system `node` or `npx` installation.
-
-![Four panes in one tab: an agent, a shell, the activity monitor, and a chat pane](docs/sessions.png)
-
-## Bots that work together
-
-Turn an agent into a reusable Bot with its own name, avatar, role, model, and working folder.
-Talk to it directly, or put several Bots into a group chat. A lead member coordinates the
-conversation, delegates work, and consolidates the result; `@` mentions route a message to a
-specific member. Topics keep separate tasks from sharing one long transcript, while every Bot
-retains a clear identity in the conversation.
-
-Idle ACP Bot processes are released after five minutes when the agent supports restoring
-sessions. Sending another message restarts the agent and loads the same conversation; this
-first reply may take a little longer to start. Active replies and permission requests stay
-running. Agents without session restore keep their conversations in memory; unused processes
-started only to discover settings can still be released. This does not stop terminal sessions.
-
-![A group of coding Bots playing a coordinated game in a shared topic](docs/bots.png)
+![Terminal sessions in one window](docs/sessions.png)
 
 ## Review in the same window
 
@@ -75,7 +54,6 @@ Any pane can switch from a shell to another view. ⌘E cycles the views:
   PPTX preview inline.
 - **Git diff** — staged, unstaged, and untracked changes. Compare the working tree against
   another base. Switch to another worktree of the same repository from the same panel.
-- **Conversation** — a chat pane over ACP, with its own model picker.
 - **Browser** — a webview. When a pane starts to serve a port, Termany offers to open it.
 
 An agent runs in one pane, and its diff opens in the pane next to it.
@@ -151,7 +129,7 @@ Any [CodexThemes](https://codexthemes.ai) pack you install appears in Settings �
 with its artwork, and applies in one click, next to the fourteen above.
 
 All ~60 actions are rebindable in Settings → Keyboard. The right-hand rail hides the tools
-you do not use. The interface ships in 21 languages.
+you do not use. The interface ships in English and Simplified Chinese.
 
 ## Install
 

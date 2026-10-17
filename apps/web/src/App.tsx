@@ -3,8 +3,6 @@ import { FindBar } from "./components/FindBar";
 import { requestFileFind } from "./components/FileTree";
 import { GitDiff } from "./components/GitDiff";
 import { HTabBar } from "./components/HTabBar";
-import { AgentWorkspace } from "./components/AgentWorkspace";
-import { AppTabRail, type AppTab } from "./components/AppTabRail";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { SearchPalette } from "./components/SearchPalette";
@@ -83,16 +81,6 @@ const TREE_NAVIGATION_ACTION_IDS = new Set([
   "exitPage",
 ]);
 
-const APP_TAB_STORAGE_KEY = "termany.app-tab";
-
-function loadAppTab(): AppTab {
-  try {
-    return localStorage.getItem(APP_TAB_STORAGE_KEY) === "agents" ? "agents" : "pages";
-  } catch {
-    return "pages";
-  }
-}
-
 /** Preserve native macOS cursor movement everywhere except xterm's hidden input. */
 function isTextEditingTarget(target: EventTarget | null): boolean {
   const element = target instanceof Element ? target : document.activeElement;
@@ -103,15 +91,6 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
 
 export function App() {
   const htab = useStore(activeHtab);
-  const activeWorkspaceId = useStore((state) => state.activeWorkspace);
-  const botEnabled = useStore((state) => state.botEnabled);
-  const [selectedAppTab, setAppTab] = useState<AppTab>(loadAppTab);
-  const appTab = botEnabled ? selectedAppTab : "pages";
-  useEffect(() => {
-    if (!botEnabled) setAppTab("pages");
-  }, [botEnabled]);
-  const appTabRef = useRef(appTab);
-  appTabRef.current = appTab;
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const railCollapsed = useStore((s) => s.railCollapsed);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
@@ -134,22 +113,14 @@ export function App() {
   const userNickname = useStore((state) => state.userProfile.nickname);
   const setUserProfile = useStore((state) => state.setUserProfile);
 
-  const handleAppTabChange = useCallback((next: AppTab) => {
-    setAppTab(next);
-    // The command palette searches Pages resources and exposes pane commands;
-    // do not carry an open palette into the Bots workspace.
-    if (next !== "pages") setSearchOpen(false);
-  }, []);
-
   const installAgent = useCallback((agentName: string, command: string) => {
     const paneId = useStore.getState().addPane("terminal", `${agentName} Install`);
     if (!paneId) return false;
     queueCommandWhenShellReady(paneId, command);
-    handleAppTabChange("pages");
     setSettingsSection(null);
     setSettingsAgentId(null);
     return true;
-  }, [handleAppTabChange]);
+  }, []);
 
   useEffect(() => {
     if (userNickname.trim()) return;
@@ -161,14 +132,6 @@ export function App() {
     });
     return () => { active = false; };
   }, [setUserProfile, userNickname]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(APP_TAB_STORAGE_KEY, appTab);
-    } catch {
-      // A locked-down browser can deny storage; the current window still works.
-    }
-  }, [appTab]);
 
   // The find bar targets one pane; if focus moves elsewhere, it would be
   // searching a terminal the user is no longer looking at — close it instead.
@@ -188,19 +151,13 @@ export function App() {
     return () => window.removeEventListener("termany:open-settings", onOpen);
   }, []);
 
-  useEffect(() => {
-    const onOpenPages = () => handleAppTabChange("pages");
-    window.addEventListener("termany:open-pages", onOpenPages);
-    return () => window.removeEventListener("termany:open-pages", onOpenPages);
-  }, [handleAppTabChange]);
-
   // Settings and Search are full-panel overlays, so blanket-hiding every
   // native webview in the workspace while either is open is correct. The
   // SideRail agent-menu dropdown is small and floating, not full-panel — it
   // registers its own rect via nativeViewOcclusion instead, so it only
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
-    const suppressed = appTab !== "pages" || settingsOpen || searchOpen || gitDiffOpen;
+    const suppressed = settingsOpen || searchOpen || gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -211,7 +168,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [appTab, settingsOpen, searchOpen, gitDiffOpen]);
+  }, [settingsOpen, searchOpen, gitDiffOpen]);
 
   // What every bindable action DOES. The catalog itself (ids, labels, default
   // chords) lives in keybindings.ts; this is the other half. Two things drive
@@ -281,10 +238,9 @@ export function App() {
       openAgentHistory: (s) => s.addPane("history"),
       openAgentUsage: (s) => s.addPane("usage"),
       openSystemMonitor: (s) => s.addPane("monitor"),
-      // Keep the shortcut registered so we still consume the browser's native
-      // Cmd+P action, but only show this Pages-specific palette on Pages.
+      // Consume the browser shortcut and open the command palette.
       search: () => {
-        if (appTabRef.current === "pages") setSearchOpen((o) => !o);
+        setSearchOpen((o) => !o);
       },
       // A pane showing its file tree searches the open file instead.
       find: (s) => {
@@ -459,46 +415,38 @@ export function App() {
   }, []);
 
   return (
-    <div className={`app${isTauri ? " tauri" : ""}${botEnabled ? "" : " bot-disabled"}`}>
+    <div className={`app${isTauri ? " tauri" : ""}`}>
       {isTauri && <WindowControls />}
       {isTauri && <ResizeHandles />}
-      {botEnabled && <AppTabRail active={appTab} workspaceId={activeWorkspaceId} onChange={handleAppTabChange} />}
       <WorkspaceSwitcher onOpenSettings={openSettings} />
-      {appTab === "pages" && (
-        <>
-          {!collapsed && <TreeSidebar />}
-          <div className="main">
-            <HTabBar />
-            <div className="pane-area">
-              <div className="pane-card">
-                {htab && <SplitView key={htab.id} htab={htab} />}
-                {findOpen && focusedPane && (
-                  <FindBar
-                    key={focusedPane}
-                    sessionId={focusedPane}
-                    onClose={() => setFindOpen(false)}
-                  />
-                )}
-              </div>
-            </div>
+      {!collapsed && <TreeSidebar />}
+      <div className="main">
+        <HTabBar />
+        <div className="pane-area">
+          <div className="pane-card">
+            {htab && <SplitView key={htab.id} htab={htab} />}
+            {findOpen && focusedPane && (
+              <FindBar
+                key={focusedPane}
+                sessionId={focusedPane}
+                onClose={() => setFindOpen(false)}
+              />
+            )}
           </div>
-          {!railCollapsed && (
-            <SideRail
-              agentsOpen={agentsOpen}
-              onAgentsOpenChange={setAgentsOpen}
-              onOpenSettings={openSettings}
-              onOpenAgentsSettings={() => {
-                lastSettingsSection.current = "agents";
-                setSettingsAgentId(null);
-                setSettingsSection("agents");
-              }}
-            />
-          )}
-        </>
+        </div>
+      </div>
+      {!railCollapsed && (
+        <SideRail
+          agentsOpen={agentsOpen}
+          onAgentsOpenChange={setAgentsOpen}
+          onOpenSettings={openSettings}
+          onOpenAgentsSettings={() => {
+            lastSettingsSection.current = "agents";
+            setSettingsAgentId(null);
+            setSettingsSection("agents");
+          }}
+        />
       )}
-      {botEnabled && <div className="agent-workspace-host" hidden={appTab !== "agents"}>
-        <AgentWorkspace key={activeWorkspaceId} workspaceId={activeWorkspaceId} visible={appTab === "agents"} />
-      </div>}
       {settingsOpen && (
         <Settings
           initialSection={settingsSection ?? "appearance"}
@@ -513,7 +461,7 @@ export function App() {
           onInstallAgent={installAgent}
         />
       )}
-      {appTab === "pages" && searchOpen && (
+      {searchOpen && (
         <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
       )}
       {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}

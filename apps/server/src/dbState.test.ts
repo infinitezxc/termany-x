@@ -17,7 +17,6 @@ test("profile nickname and uploaded avatar survive a state reload", async (t) =>
   };
   db.saveState({
     workspaces: [],
-    agentConversations: [],
     userProfile,
     activeWorkspace: "",
     sidebarCollapsed: false,
