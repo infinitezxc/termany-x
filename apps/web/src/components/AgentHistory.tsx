@@ -1,6 +1,6 @@
 import { textInputProps } from "../textInputProps";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useAgentConfigs } from "../agents";
+import { useAgentConfigs, type AgentConfig } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
@@ -77,9 +77,9 @@ const RESUME_COMMANDS: Record<
   string,
   (cfg: { command: string; args: string }, sessionId: string, fork: boolean) => string
 > = {
+  codex: (cfg, id) => [cfg.command, "resume", id, cfg.args].filter(Boolean).join(" "),
   claude: (cfg, id, fork) =>
     [cfg.command, "--resume", id, fork ? "--fork-session" : "", cfg.args].filter(Boolean).join(" "),
-  codex: (cfg, id) => [cfg.command, "resume", id, cfg.args].filter(Boolean).join(" "),
 };
 
 const ACTIVE_WINDOW_MS = 2 * 60_000;
@@ -117,10 +117,9 @@ function formatTokens(n: number): string {
 }
 
 /**
- * Agent session-history browser: one tab per enabled agent, each listing that
- * CLI's past conversations newest-first, read server-side from the agent's own
- * on-disk transcript format (claude and codex today — other agents show a
- * not-supported note).
+ * Agent session-history browser: Codex first, then Claude Code, when enabled.
+ * Each tab lists past conversations newest-first, read server-side from the
+ * agent's own on-disk transcript format.
  *
  * The list opens scoped to wherever the focused pane is: the containing repo
  * (grouped by worktree, current one first, deleted worktrees last) or, outside
@@ -140,8 +139,12 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
   const closePane = useStore((s) => s.closePane);
   const renamePane = useStore((s) => s.renamePane);
   const workspaces = useStore((s) => s.workspaces);
-  const agents = useAgentConfigs().filter((a) => a.enabled);
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "claude");
+  const agentConfigs = useAgentConfigs();
+  const agents = Object.keys(RESUME_COMMANDS)
+    .map((id) => agentConfigs.find((agent) => agent.id === id && agent.enabled))
+    .filter((agent): agent is AgentConfig => agent !== undefined);
+  const [selectedAgentId, setAgentId] = useState("codex");
+  const agentId = agents.find((agent) => agent.id === selectedAgentId)?.id ?? agents[0]?.id ?? "codex";
   // list key ("agent" or "agent|scoped") → paged sessions; null = unsupported.
   const [byKey, setByKey] = useState<Record<string, SessionPageState>>({});
   const [error, setError] = useState(false);
@@ -562,7 +565,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
                   <AgentIcon />
                 </span>
               )}
-              <span>{a.name}</span>
+              <span>{a.id === "claude" ? "Claude Code" : a.name}</span>
             </button>
           ))}
         </div>

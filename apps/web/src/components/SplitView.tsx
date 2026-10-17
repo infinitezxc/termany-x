@@ -1,7 +1,6 @@
 import { textInputProps } from "../textInputProps";
 import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { PanelsTopLeft } from "lucide-react";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
@@ -278,49 +277,28 @@ function PanePortForward({ leaf }: { leaf: Leaf }) {
 function PaneViewSwitch({ leaf }: { leaf: Leaf }) {
   const { t } = useI18n();
   const setPaneView = useStore((s) => s.setPaneView);
-  const [open, setOpen] = useState(false);
-  const close = useCallback(() => setOpen(false), []);
-  const { rootRef, panelRef } = usePaneHeadPopover(open, close);
   const current = leaf.view ?? "terminal";
   const choices = [
     { view: "terminal", icon: TerminalIcon },
     { view: "files", icon: FilesIcon },
     { view: "history", icon: HistoryIcon },
   ] as const;
-  const label = choices.map(({ view }) => t(`pane.view.${view}`)).join(" / ");
 
   return (
-    <div className="pane-view-menu" ref={rootRef}>
-      <button
-        type="button"
-        className="pane-btn"
-        title={label}
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((was) => !was)}
-      >
-        <PanelsTopLeft size={14} />
-      </button>
-      {open && (
-        <div className="pop-panel pane-view-panel" role="menu" aria-label={label} ref={panelRef}>
-          {choices.map(({ view, icon: Icon }) => (
-            <button
-              key={view}
-              type="button"
-              role="menuitemradio"
-              aria-checked={current === view}
-              className="pop-item"
-              onClick={() => { setPaneView(leaf.id, view); close(); }}
-            >
-              <Icon />
-              <span className="pop-item-label">{t(`pane.view.${view}`)}</span>
-              {current === view && <CheckIcon />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <>
+      {choices.filter(({ view }) => view !== current).map(({ view, icon: Icon }) => (
+        <button
+          key={view}
+          type="button"
+          className="pane-btn"
+          title={t(`pane.view.${view}`)}
+          aria-label={t(`pane.view.${view}`)}
+          onClick={() => setPaneView(leaf.id, view)}
+        >
+          <Icon />
+        </button>
+      ))}
+    </>
   );
 }
 
