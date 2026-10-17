@@ -10510,3 +10510,9 @@ html.tauri #root {
   color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
+
+.file-tree-row.file-drop-target {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--accent-subtle, rgba(99, 102, 241, 0.15));
+}

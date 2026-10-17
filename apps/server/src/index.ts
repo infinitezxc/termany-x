@@ -45,6 +45,7 @@ import {
   remoteDelete,
   remoteRename,
   remoteWrite,
+  remoteUpload,
 } from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -1491,6 +1492,22 @@ const http = createServer((req, res) => {
         mtimeMs: stat.mtimeMs,
       });
     })().catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/upload") {
+    readJson(req).then(async (body) => {
+      const remote = remoteFsFor(body?.session ? String(body.session) : null);
+      if (!remote) throw new Error("An active SSH session is required");
+      const dir = body?.dir;
+      if (typeof dir !== "string" || !dir || dir.includes("\0")) throw new Error("A destination directory is required");
+      if (!Array.isArray(body?.paths) || !body.paths.length ||
+          !body.paths.every((file: unknown) => typeof file === "string" && path.isAbsolute(file))) {
+        throw new Error("Absolute local file paths are required");
+      }
+      await remoteUpload(remote.args, dir, body.paths);
+      json(200, { ok: true });
+    }).catch(fail);
     return;
   }
 

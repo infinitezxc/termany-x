@@ -8,6 +8,8 @@ import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
 import { useI18n } from "../i18n";
 import { useFileDrag } from "../fileDrag";
+import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
+import { openLocalPathsInSession } from "../terminal/openLocalPath";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import { revealPath } from "../openExternal";
@@ -499,6 +501,7 @@ function FileTreeRow({
       <div
         className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
+        data-drop-folder={entry.isDir ? path : undefined}
         data-drag-file={!entry.isDir && !renaming ? path : undefined}
         onClick={() => {
           if (renaming) return;
@@ -1537,6 +1540,82 @@ function FileTreeView({
   const [creating, setCreating] = useState<Creating | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
   const fileDrag = useFileDrag(remote);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const uploadStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (uploadStatusTimer.current !== null) clearTimeout(uploadStatusTimer.current);
+  }, []);
+  const dropFolderRef = useRef<Element | null>(null);
+  const highlightDropFolder = (target: Element | null) => {
+    dropFolderRef.current?.classList.remove("file-drop-target");
+    dropFolderRef.current = remote ? target?.closest("[data-drop-folder]") ?? null : null;
+    dropFolderRef.current?.classList.add("file-drop-target");
+  };
+  useEffect(() => () => highlightDropFolder(null), []);
+  const folderAt = (target: EventTarget | null) => {
+    const element = target instanceof Element ? target : null;
+    return element?.closest<HTMLElement>("[data-drop-folder]")?.dataset.dropFolder;
+  };
+  const acceptDroppedPaths = useCallback(async (paths: string[], folder?: string) => {
+    if (!paths.length) return;
+    if (!remote) {
+      void openLocalPathsInSession(sessionId, paths);
+      return;
+    }
+    const dir = folder ?? root;
+    if (!dir) return;
+    if (uploadStatusTimer.current !== null) {
+      clearTimeout(uploadStatusTimer.current);
+      uploadStatusTimer.current = null;
+    }
+    setUploadStatus(`Uploading to ${dir}…`);
+    setOpError(null);
+    try {
+      await fsPost("upload", { session: remote, dir, paths });
+      setUploadStatus(`Uploaded to ${dir}`);
+      if (uploadStatusTimer.current !== null) clearTimeout(uploadStatusTimer.current);
+      uploadStatusTimer.current = setTimeout(() => {
+        setUploadStatus(null);
+        uploadStatusTimer.current = null;
+      }, 3000);
+    } catch (error) {
+      setUploadStatus(null);
+      setOpError(error instanceof Error ? error.message : String(error));
+    } finally {
+      loadDir(dir);
+    }
+  }, [remote, sessionId, root, loadDir]);
+
+  useEffect(() => subscribeDesktopFileDrops((event) => {
+    highlightDropFolder(null);
+    if (event.type === "leave") return;
+    const container = splitRef.current;
+    if (!container) return;
+    for (const { x, y } of event.points) {
+      const element = document.elementFromPoint(x, y);
+      if (!element || !container.contains(element)) continue;
+      if (event.type === "drop") void acceptDroppedPaths(event.paths, folderAt(element));
+      else highlightDropFolder(element);
+      break;
+    }
+  }), [acceptDroppedPaths]);
+
+  const dropHandlers = {
+    onDragOver: (event: React.DragEvent) => {
+      if (!event.dataTransfer.types.includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      highlightDropFolder(event.target instanceof Element ? event.target : null);
+    },
+    onDragLeave: () => highlightDropFolder(null),
+    onDrop: (event: React.DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      highlightDropFolder(null);
+      void acceptDroppedPaths(extractDroppedPaths(event.dataTransfer), folderAt(event.target));
+    },
+  };
+
   const closeEntryMenu = useCallback(() => setEntryMenu(null), []);
 
   const openEntryMenu = (path: string, entry: FsEntry | null, x: number, y: number) => {
@@ -1804,7 +1883,8 @@ function FileTreeView({
 
   // Nothing open: just the tree, full width.
   if (!tabs.length) return (
-    <div className="file-tree" {...fileDrag.handlers}>
+    <div className="file-tree" ref={splitRef} {...fileDrag.handlers} {...dropHandlers}>
+      {uploadStatus && <div className="file-tree-message" role="status">{uploadStatus}</div>}
       {fileDrag.status && <div className="file-tree-message" role="status">{fileDrag.status}</div>}
       {treeUi}
     </div>
@@ -1849,7 +1929,8 @@ function FileTreeView({
     />
   );
   return (
-    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""} ${treeOnly ? "tree-only" : ""}`} ref={splitRef} {...fileDrag.handlers}>
+    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""} ${treeOnly ? "tree-only" : ""}`} ref={splitRef} {...fileDrag.handlers} {...dropHandlers}>
+      {uploadStatus && <div className="file-drag-status" role="status">{uploadStatus}</div>}
       {fileDrag.status && <div className="file-drag-status" role="status">{fileDrag.status}</div>}
       {(treeOnly || !collapsed) && (
         <>

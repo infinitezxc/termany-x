@@ -10,7 +10,6 @@ import {
   subscribeTerminalScrollState,
   subscribeSshNaturalExit,
   terminalSessionId,
-  uploadFilesToSession,
   type TerminalScrollState,
 } from "../terminal/manager";
 import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
@@ -116,6 +115,9 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
   }, [scrollState.atBottom, scrollState.atTop, scrollState.hasOverflow]);
 
   useEffect(() => {
+    setDragOver(false);
+    if (sshTarget) return;
+
     const containsPoint = (point: { x: number; y: number }) => {
       const rect = hostRef.current?.getBoundingClientRect();
       return !!rect && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
@@ -127,19 +129,14 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
         return;
       }
       const isTarget = event.points.some(containsPoint);
-      const isFocusedFallback = event.type === "drop" && activeHtab(useStore.getState())?.focused === id;
-      if (!isTarget && !isFocusedFallback) {
+      if (!isTarget) {
         setDragOver(false);
         return;
       }
 
       if (event.type === "drop") {
         setDragOver(false);
-        if (sshTarget && event.paths.length) {
-          uploadFilesToSession(terminalSessionId(id, sshTarget), event.paths);
-        } else {
-          void openLocalPathsInSession(id, event.paths);
-        }
+        void openLocalPathsInSession(id, event.paths);
         return;
       }
 
@@ -159,19 +156,15 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
         onDragOver={(e) => {
           if (!e.dataTransfer.types.includes("Files")) return;
           e.preventDefault();
-          e.dataTransfer.dropEffect = "copy";
-          setDragOver(true);
+          e.dataTransfer.dropEffect = sshTarget ? "none" : "copy";
+          setDragOver(!sshTarget);
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
-          const paths = extractDroppedPaths(e.dataTransfer);
-          if (sshTarget && paths.length) {
-            uploadFilesToSession(terminalSessionId(id, sshTarget), paths);
-          } else {
-            void openLocalPathsInSession(id, paths);
-          }
+          if (sshTarget) return;
+          void openLocalPathsInSession(id, extractDroppedPaths(e.dataTransfer));
         }}
       />
       {scrollState.hasOverflow && (

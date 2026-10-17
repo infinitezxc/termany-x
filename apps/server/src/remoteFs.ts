@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import type { GitHost } from "./git.js";
 import {
@@ -380,4 +383,34 @@ export function remoteGitHost(sshArgs: string[]): GitHost {
       ),
     path: path.posix,
   };
+}
+
+/** Stream local files into an explicit remote directory without touching the PTY. */
+export async function remoteUpload(sshArgs: string[], dir: string, files: string[]): Promise<void> {
+  for (const file of files) {
+    if (!(await stat(file)).isFile()) throw new Error("Only regular files can be uploaded");
+    const slot = await acquireChannel(sshArgs, { stream: true });
+    try {
+      const script = `${EXPAND_P} cd -- "$p" || exit 3; set -C; cat > "./$2"`;
+      const child = spawn("ssh", [...sshArgs, remoteShCommand(script, [dir, path.basename(file)], null)], {
+        stdio: ["pipe", "ignore", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => {
+        if (stderr.length < 8192) stderr += chunk.toString("utf8");
+      });
+      const exited = new Promise<void>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderrMessage(stderr, code))));
+      });
+      const copied = pipeline(createReadStream(file), child.stdin).catch((error) => {
+        child.kill();
+        throw error;
+      });
+      const results = await Promise.allSettled([exited, copied]);
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    } finally {
+      slot.release();
+    }
+  }
 }

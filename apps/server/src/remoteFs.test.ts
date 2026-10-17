@@ -19,6 +19,7 @@ import {
   remoteSh,
   remoteStream,
   remoteWrite,
+  remoteUpload,
 } from "./remoteFs.js";
 import { remoteShCommand } from "./remoteCommand.js";
 
@@ -360,3 +361,22 @@ test(
     assert.ok(cjk && cjk.preview.length > 0 && !cjk.preview.includes("�"), cjk?.preview);
   }),
 );
+
+test("folder uploads preserve binary bytes and quote destination names", withFakeSsh(async (root) => {
+  const dir = path.join(root, "folder ' $name");
+  mkdirSync(dir);
+  const file = path.join(root, "file ' $(echo injected).bin");
+  const bytes = Buffer.from([0, 255, 128, 13, 10, 42]);
+  writeFileSync(file, bytes);
+  await remoteUpload([], dir, [file]);
+  assert.deepEqual(readFileSync(path.join(dir, path.basename(file))), bytes);
+  await assert.rejects(remoteUpload([], dir, [file]));
+  assert.deepEqual(readFileSync(path.join(dir, path.basename(file))), bytes);
+}));
+
+test("folder uploads reject missing destinations and local directories", withFakeSsh(async (root) => {
+  const file = path.join(root, "test.txt");
+  writeFileSync(file, "test");
+  await assert.rejects(remoteUpload([], path.join(root, "missing"), [file]));
+  await assert.rejects(remoteUpload([], root, [root]), /regular files/);
+}));
