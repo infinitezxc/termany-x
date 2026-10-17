@@ -39,6 +39,7 @@ export default {
   "sidebar.pages": "页面",
   "sidebar.resize": "调整页面栏宽度",
   "sidebar.activePages": "活跃页面",
+  "sidebar.pageActions": "页面操作",
   "sidebar.newPage": "新建页面",
   "sidebar.addNestedPage": "新建子页面",
   "sidebar.deletePageTree": "删除此页面及其所有子页面",

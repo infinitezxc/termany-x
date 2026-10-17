@@ -19,7 +19,7 @@ const skip = process.platform === "win32" ? "POSIX shells only" : false;
 type Run = { statusAt: (status: string) => number | undefined; elapsed: number };
 
 /** Run one command in an interactive shell and watch a task through it. */
-async function runInShell(command: string, holdMs: number): Promise<Run> {
+async function runInShell(command: string, holdMs: number, ignoreTaskOutput = false): Promise<Run> {
   const pty = spawn(SHELL, ["-i"], {
     name: "xterm-256color",
     cols: 80,
@@ -39,19 +39,29 @@ async function runInShell(command: string, holdMs: number): Promise<Run> {
   // name, since nothing else can have run yet. /bin/sh answers "bash" here,
   // so the spawn command would not have matched.
   let shellJob = "";
-  const sampler = sampleOnceOutputSettles(() => {
-    if (!shellJob) shellJob = pty.process || SHELL;
+  const reconcile = () => {
+    if (!shellJob) return;
     tracker.noteForegroundJob("pane-a", pty.process, shellJob);
     record();
+  };
+  const sampler = sampleOnceOutputSettles(() => {
+    if (!shellJob) shellJob = pty.process || SHELL;
+    reconcile();
   });
-  pty.onData(() => sampler.noteOutput());
+  let taskStarted = false;
+  pty.onData(() => {
+    if (!ignoreTaskOutput || !taskStarted) sampler.noteOutput();
+  });
+  const poll = setInterval(reconcile, 2_000);
 
   await new Promise((r) => setTimeout(r, 300));
+  taskStarted = true;
   tracker.register("pane-a", "claude");
   record();
   pty.write(`${command}\n`);
 
   await new Promise((r) => setTimeout(r, holdMs));
+  clearInterval(poll);
   sampler.dispose();
   pty.kill();
   return { statusAt: (status) => seen.get(status), elapsed: Date.now() - startedAt };
@@ -77,5 +87,19 @@ test("a command still holding the terminal leaves the task working", { skip }, a
   const run = await runInShell("sleep 5", 1_500);
 
   assert.equal(run.statusAt("done"), undefined, "settled while the command was still running");
+  assert.equal(typeof run.statusAt("working"), "number");
+});
+
+test("periodic reconciliation clears working without output or an attached client", { skip }, async () => {
+  // Ignore all task output: only independent foreground samples can observe
+  // both the running command and the return to the shell.
+  const run = await runInShell("sleep 2.5", 4_500, true);
+  assert.equal(typeof run.statusAt("done"), "number");
+  assert.ok(run.statusAt("done")! > 2_500, "must not finish before the process exits");
+});
+
+test("periodic reconciliation keeps a silent running task yellow", { skip }, async () => {
+  const run = await runInShell("sleep 8", 4_500, true);
+  assert.equal(run.statusAt("done"), undefined);
   assert.equal(typeof run.statusAt("working"), "number");
 });

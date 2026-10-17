@@ -16,7 +16,7 @@ import {
   subscribeAgentActivity,
   type AgentActivityStatus,
 } from "../terminal/manager";
-import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
+import { ChevronIcon, CloseIcon, CollapseAllIcon, MoreIcon, PageIcon, PlusIcon } from "./icons";
 
 const DRAG_MIME = "application/x-termany-node";
 const WIDTH_STORAGE_KEY = "termany.pageColumnWidth";
@@ -155,6 +155,16 @@ function TreeItem({
   const moveNode = useStore((s) => s.moveNode);
   const moveHTab = useStore((s) => s.moveHTab);
   const [editing, setEditing] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !actionsRef.current?.contains(event.target)) setActionsOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    return () => window.removeEventListener("pointerdown", dismiss);
+  }, [actionsOpen]);
   const ime = useImeGuard();
   // Where a drag over this row would land: nest into it, or reorder as a
   // sibling before/after it (top/bottom quarter of the row).
@@ -163,11 +173,11 @@ function TreeItem({
   const activeDropPos = pointerDropPos ?? dropPos;
 
   const hasChildren = node.children.length > 0;
-  const allLeafIds = subtreeLeafIds(node);
+  const leafIds = ownLeafIds(node);
   const viewedLeafIds = node.htabs
     .filter((tab) => tab.id === node.activeHTab)
     .flatMap((tab) => paneLeafIds(tab.layout));
-  const activity = agentActivitySummary(allLeafIds);
+  const activity = agentActivitySummary(leafIds);
 
   return (
     <>
@@ -281,28 +291,21 @@ function TreeItem({
             {node.title}
           </span>
         )}
-        <button
-          className="tree-act"
-          title={t("sidebar.addNestedPage")}
-          onClick={(e) => {
-            e.stopPropagation();
-            addChildNode(node.id);
-          }}
-        >
-          <PlusIcon />
-        </button>
-        {!elsewhere && (
-          <button
-            className="tree-act"
-            title={t("sidebar.deletePageTree")}
-            onClick={(e) => {
+        <div className="tree-page-actions" ref={actionsRef} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
               e.stopPropagation();
-              deleteNode(node.id);
-            }}
-          >
-            <CloseIcon />
-          </button>
-        )}
+              setActionsOpen(false);
+              actionsRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+            }
+          }} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setActionsOpen(false); }}>
+          <button className="tree-act" title={t("sidebar.pageActions")} aria-label={t("sidebar.pageActions")} aria-expanded={actionsOpen}
+            onClick={() => setActionsOpen((open) => !open)}><MoreIcon /></button>
+          {actionsOpen && <div className="tree-page-menu">
+            <button onClick={() => { setActionsOpen(false); addChildNode(node.id); }}><PlusIcon />{t("sidebar.addNestedPage")}</button>
+            {!elsewhere && <button className="danger" title={t("sidebar.deletePageTree")} onClick={() => { setActionsOpen(false); deleteNode(node.id); }}><CloseIcon />{t("common.delete")}</button>}
+          </div>}
+        </div>
         {elsewhere && <span className="tree-elsewhere" title={t("sidebar.openInOtherWindow")} />}
         {node.htabs.length > 1 && (
           <span className="tree-count" title={t("sidebar.terminals", { count: node.htabs.length })}>
@@ -495,12 +498,10 @@ export function TreeSidebar() {
 
   return (
     <div className="sidebar" ref={sidebarRef} style={{ width }}>
-      <button className="sidebar-workspace-switcher" title={ws.title} onClick={toggleWorkspaceSwitcher}>
+      <button className="sidebar-workspace-switcher" title={ws.title} aria-label={ws.title} onClick={toggleWorkspaceSwitcher}>
           <span className={`ws-avatar${ws.icon ? " emoji" : ""}`} aria-hidden="true">
             {ws.icon ?? (ws.title.trim().charAt(0).toUpperCase() || "?")}
           </span>
-          <span className="sidebar-workspace-name">{ws.title}</span>
-          <ChevronIcon dir="down" />
       </button>
       {/* Pages whose own panes are still inside an agent TUI, hoisted above the
           tree. Task state is independent and stays in the traffic-light counts. */}

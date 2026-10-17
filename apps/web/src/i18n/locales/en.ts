@@ -39,6 +39,7 @@ export default {
   "sidebar.pages": "PAGES",
   "sidebar.resize": "Resize page column",
   "sidebar.activePages": "ACTIVE",
+  "sidebar.pageActions": "Page actions",
   "sidebar.newPage": "New page",
   "sidebar.addNestedPage": "Add nested page",
   "sidebar.deletePageTree": "Delete this page and everything under it",

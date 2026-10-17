@@ -45,12 +45,12 @@ export function foregroundJobIsShell(job: string, shellJob: string): boolean {
 export const JOB_SETTLE_MS = 150;
 
 /**
- * Read the job once output settles, rather than on a clock or on every chunk.
+ * Read the job once output settles, in addition to periodic reconciliation.
  *
- * A process can only take or release the terminal by starting or exiting, and
- * both print something — the shell at minimum redraws its prompt. So output
- * marks every transition worth sampling, and idle sessions need no timer at
- * all. Trailing rather than leading, because the sample that matters most is
+ * Output usually accompanies a process taking or releasing the terminal, so
+ * sampling after it settles provides a prompt response. Periodic checks cover
+ * silent exits and continuous output that never settles. Trailing rather than
+ * leading, because the sample that matters most is
  * the one after the *last* chunk of a turn: an agent that exits may print
  * nothing further, and a throttle that had just fired would miss it.
  */

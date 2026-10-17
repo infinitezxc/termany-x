@@ -1673,6 +1673,7 @@ html.tauri #root {
   height: 18px;
 }
 /* Hidden actions leave their width available for the page name. */
+.tree-act[aria-expanded="true"],
 .tree-row:hover .tree-act,
 .tree-row:has(:focus-visible) .tree-act {
   display: flex;
@@ -6452,8 +6453,8 @@ html.tauri #root {
 
 .sidebar-workspace-switcher {
   display: flex;
+  align-self: flex-end;
   align-items: center;
-  gap: 8px;
   flex-shrink: 0;
   min-width: 0;
   height: 28px;
@@ -6467,11 +6468,8 @@ html.tauri #root {
   text-align: left;
   cursor: pointer;
 }
-.app.tauri .sidebar-workspace-switcher { margin-left: 68px; }
 .sidebar-workspace-switcher:hover { background: var(--bg-3); }
 .sidebar-workspace-switcher:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.sidebar-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.sidebar-workspace-switcher > svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--fg-dim); }
 .terminal-workspace-menu .ws-menu {
   top: 36px;
   bottom: auto;
@@ -6901,3 +6899,35 @@ html.tauri #root {
   outline-offset: -1px;
   background: var(--accent-subtle, rgba(99, 102, 241, 0.15));
 }
+
+.tree-page-actions { position: relative; flex-shrink: 0; }
+.tree-row:has(.tree-page-menu) { z-index: 10; }
+.tree-page-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  width: max-content;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .2);
+}
+.tree-page-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.tree-page-menu button:hover, .tree-page-menu button:focus-visible { background: var(--bg-3); }
+.tree-page-menu button.danger { color: var(--danger, #dc5b5b); }
+.tree-page-menu svg { width: 16px; height: 16px; flex-shrink: 0; }

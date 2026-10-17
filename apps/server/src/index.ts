@@ -399,6 +399,8 @@ interface PtySession {
   sshTarget: string | null;
   /** In-band file transfer, wired in wireSession() as the pty is attached. */
   transfer?: TransferPipeline;
+  /** Refresh activity from the live foreground job, including after reattach. */
+  reconcileActivity?: () => void;
 }
 
 const ptySessions = new Map<string, PtySession>();
@@ -515,6 +517,14 @@ function isOpen(ws: WebSocket | null): ws is WebSocket {
   return !!ws && ws.readyState === ws.OPEN;
 }
 
+function reconcileAgentActivities(): void {
+  for (const session of ptySessions.values()) session.reconcileActivity?.();
+}
+
+// Output can stop before a process exits, or keep repainting without a quiet
+// window. Sample independently of output and of whether a client is attached.
+setInterval(reconcileAgentActivities, 2_000).unref();
+
 /** Wire a freshly spawned pty's output into its ring + whatever ws is attached. */
 function wireSession(id: string | undefined, session: PtySession): void {
   // The PTY's foreground process group: proof of when a command — an agent
@@ -523,10 +533,22 @@ function wireSession(id: string | undefined, session: PtySession): void {
   // reads the name the shell answers to rather than the command it was
   // spawned from, and why an unmoving job has to conclude nothing.
   let shellJob = "";
+  session.reconcileActivity = () => {
+    if (!id || !shellJob || ptySessions.get(id) !== session) return;
+    try {
+      activityTracker.noteForegroundJob(id, session.pty.process || "", shellJob);
+    } catch {
+      // PTY inspection can race an exit. An unavailable job proves nothing.
+    }
+  };
   const jobSampler = sampleOnceOutputSettles(() => {
-    const job = session.pty.process || "";
-    if (!shellJob) shellJob = job || (session.sshTarget ? "ssh" : SHELL);
-    if (id) activityTracker.noteForegroundJob(id, job, shellJob);
+    try {
+      const job = session.pty.process || "";
+      if (!shellJob) shellJob = job || (session.sshTarget ? "ssh" : SHELL);
+      session.reconcileActivity?.();
+    } catch {
+      // Retry on the next sample if the PTY is changing process groups.
+    }
   });
   /** Everything a client should see: live output, plus the progress bar a
    *  transfer draws while it runs. Also what history records. */
@@ -552,6 +574,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
   session.pty.onData((data) => transfer.fromShell(data));
   session.pty.onExit(({ exitCode, signal }) => {
     jobSampler.dispose();
+    session.reconcileActivity = undefined;
     oscCwdByPid.delete(session.pty.pid);
     console.error(
       `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
@@ -721,10 +744,12 @@ const http = createServer((req, res) => {
   // SSE pushes complete snapshots, making reconnects self-healing instead of
   // relying on a fragile sequence of individual transitions.
   if (req.method === "GET" && reqUrl.pathname === "/api/activity") {
+    reconcileAgentActivities();
     json(200, activityPayload());
     return;
   }
   if (req.method === "GET" && reqUrl.pathname === "/api/activity/events") {
+    reconcileAgentActivities();
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
@@ -2015,6 +2040,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
   // from a stale connection) — resume it instead of spawning a fresh one.
   const existing = sessionId ? ptySessions.get(sessionId) : undefined;
   if (existing && existing.sshTarget === sshTarget) {
+    existing.reconcileActivity?.();
     console.log(`[termany] client #${cid} reattached to session ${sessionId} (pid ${existing.pty.pid})`);
     activityTracker.bindAgent(sessionId!, agent);
     if (existing.ws && existing.ws !== ws) {
