@@ -84,11 +84,14 @@ export function stepWorkspace(s: WorkspaceCursor, dir: 1 | -1): string {
   return s.workspaces[(((start + dir) % len) + len) % len].id;
 }
 
-/** Older layouts may still contain conversation panes; reopen them as terminals. */
+/** Reopen removed conversation and browser panes as terminals. */
 export function restoreTerminalViews(workspaces: Workspace[]): Workspace[] {
-  const pane = (value: Pane): Pane => value.kind === "split"
-    ? { ...value, children: value.children.map(pane) }
-    : (value.view as string) === "agent" ? { ...value, view: "terminal" } : value;
+  const pane = (value: Pane): Pane => {
+    if (value.kind === "split") return { ...value, children: value.children.map(pane) };
+    if (!["agent", "web"].includes(value.view as string)) return value;
+    const { webUrl: _removed, ...leaf } = value as typeof value & { webUrl?: string };
+    return { ...leaf, view: "terminal" };
+  };
   const nodes = (values: TreeNode[]): TreeNode[] => values.map((node) => ({
     ...node,
     htabs: node.htabs.map((tab) => ({ ...tab, layout: pane(tab.layout) })),

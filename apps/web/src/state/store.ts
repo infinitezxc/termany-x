@@ -42,7 +42,6 @@ export type PaneView =
   | "terminal"
   | "files"
   | "git"
-  | "web"
   | "monitor"
   | "history"
   | "usage"
@@ -70,8 +69,6 @@ export type Pane =
       filesRoot?: string;
       /** File to preview when opening this pane in files view. */
       filesSelected?: string;
-      /** Last URL explicitly opened in this pane's browser view. */
-      webUrl?: string;
       /** OpenSSH destination for a remote terminal. When absent this pane runs
        *  the local login shell. Kept in layout state so relaunch reconnects to
        *  the same host. */
@@ -279,8 +276,6 @@ interface State {
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
   setPaneView: (leafId: string, view: PaneView) => void;
-  /** Persist the browser view's address across remounts and relaunches. */
-  setPaneWebUrl: (leafId: string, url: string) => void;
   /** Open a dropped local path in this pane's files view. */
   openPathInPane: (leafId: string, root: string, selectedFile?: string) => void;
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
@@ -1535,14 +1530,6 @@ export const useStore = create<State>((set, get) => ({
             return { ...h, layout: setView(h.layout) };
           }),
         })),
-      })),
-    })),
-
-  setPaneWebUrl: (leafId, url) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
-        ...leaf,
-        webUrl: url,
       })),
     })),
 

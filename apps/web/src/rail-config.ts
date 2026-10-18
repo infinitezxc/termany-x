@@ -3,12 +3,9 @@ export const RAIL_ITEM_IDS = [
   "terminal",
   "files",
   "git",
-  "web",
-  "monitor",
-  "agents",
-  "providers",
   "history",
   "usage",
+  "monitor",
 ] as const;
 
 export type RailItemId = (typeof RAIL_ITEM_IDS)[number];
@@ -20,10 +17,7 @@ export const DEFAULT_RAIL_VISIBILITY: RailVisibility = {
   terminal: true,
   files: true,
   git: true,
-  web: true,
   monitor: true,
-  agents: true,
-  providers: true,
   history: true,
   usage: true,
 };

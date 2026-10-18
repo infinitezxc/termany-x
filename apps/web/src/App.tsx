@@ -104,7 +104,6 @@ export function App() {
     setSettingsSection(lastSettingsSection.current);
   }, []);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
@@ -151,11 +150,7 @@ export function App() {
     return () => window.removeEventListener("termany:open-settings", onOpen);
   }, []);
 
-  // Settings and Search are full-panel overlays, so blanket-hiding every
-  // native webview in the workspace while either is open is correct. The
-  // SideRail agent-menu dropdown is small and floating, not full-panel — it
-  // registers its own rect via nativeViewOcclusion instead, so it only
-  // blanks the pane(s) it actually overlaps (see SideRail.tsx).
+  // Hide native document previews while full-panel overlays are open.
   useEffect(() => {
     const suppressed = settingsOpen || searchOpen || gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
@@ -436,16 +431,7 @@ export function App() {
         </div>
       </div>
       {!railCollapsed && (
-        <SideRail
-          agentsOpen={agentsOpen}
-          onAgentsOpenChange={setAgentsOpen}
-          onOpenSettings={openSettings}
-          onOpenAgentsSettings={() => {
-            lastSettingsSection.current = "agents";
-            setSettingsAgentId(null);
-            setSettingsSection("agents");
-          }}
-        />
+        <SideRail onOpenSettings={openSettings} />
       )}
       {settingsOpen && (
         <Settings

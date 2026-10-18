@@ -57,7 +57,6 @@ import {
 import { SystemMonitor } from "./SystemMonitor";
 import { SshConnections } from "./SshConnections";
 import { TerminalPane } from "./TerminalPane";
-import { WebBrowserPane } from "./WebBrowserPane";
 
 type Leaf = Pane & { kind: "leaf" };
 type PaneDropTarget = { id: string; edge: DropEdge } | null;
@@ -435,7 +434,6 @@ function PaneSlot({
 }) {
   const focused = useStore((s) => activeHtab(s)?.focused === leaf.id);
   const setFocusedPane = useStore((s) => s.setFocusedPane);
-  const setPaneWebUrl = useStore((s) => s.setPaneWebUrl);
   const remoteSession = useStore((s) => (leaf.view === "git" ? remoteSessionFor(s, leaf.id) : undefined));
   const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
   const isTerminal = (leaf.view ?? "terminal") === "terminal";
@@ -490,14 +488,6 @@ function PaneSlot({
           <AgentUsage />
         ) : leaf.view === "providers" ? (
           <ProviderPane />
-        ) : leaf.view === "web" ? (
-          <WebBrowserPane
-            id={leaf.id}
-            initialUrl={leaf.webUrl}
-            onUrlChange={(url) => setPaneWebUrl(leaf.id, url)}
-            focused={focused}
-          />
-
         ) : (
           <TerminalPane id={leaf.id} sshTarget={leaf.sshTarget} />
         )}
@@ -644,42 +634,24 @@ function ZenOverlay({
   const toggleMaximize = useStore((s) => s.toggleMaximize);
   const scrimRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
-  const showsNativeView = leaf.view === "web";
 
   useEffect(() => {
     const scrim = scrimRef.current;
     const pane = paneRef.current;
     if (!scrim || !pane) return;
-    const ids = showsNativeView
-      ? ["top", "bottom", "left", "right"].map((side) => `zen:${htabId}:${side}`)
-      : [`zen:${htabId}:full`];
-    const sync = () => {
-      const r = scrim.getBoundingClientRect();
-      if (!showsNativeView) {
-        registerOccluder(ids[0], r);
-        return;
-      }
-      const p = pane.getBoundingClientRect();
-      registerOccluder(ids[0], { x: r.x, y: r.y, width: r.width, height: p.y - r.y });
-      registerOccluder(ids[1], { x: r.x, y: p.bottom, width: r.width, height: r.bottom - p.bottom });
-      registerOccluder(ids[2], { x: r.x, y: p.y, width: p.x - r.x, height: p.height });
-      registerOccluder(ids[3], { x: p.right, y: p.y, width: r.right - p.right, height: p.height });
-    };
+    const id = `zen:${htabId}:full`;
+    const sync = () => registerOccluder(id, scrim.getBoundingClientRect());
     const ro = new ResizeObserver(sync);
     ro.observe(scrim);
     ro.observe(pane);
     sync();
-    // The pane's entry animation scales it (transform), which moves its rect
-    // without firing the ResizeObserver — the bands computed at mount overlap
-    // the settled pane and would keep a native webview inside it hidden
-    // forever. Re-measure once the animation lands.
     pane.addEventListener("animationend", sync);
     return () => {
       ro.disconnect();
       pane.removeEventListener("animationend", sync);
-      ids.forEach(unregisterOccluder);
+      unregisterOccluder(id);
     };
-  }, [htabId, showsNativeView]);
+  }, [htabId]);
 
   return createPortal(
     <>

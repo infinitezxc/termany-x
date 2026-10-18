@@ -274,7 +274,6 @@ html[data-theme="win98"] .pane-body:has(.term-pane) {
 
 /* Toolbars inside a pane sit on the window face, not on the client area, with
    the same shallow raised edge as the tab strip. */
-html[data-theme="win98"] .web-toolbar,
 html[data-theme="win98"] .file-tree-head,
 html[data-theme="win98"] .agent-tools-header {
   background: var(--w98-face);
@@ -336,7 +335,6 @@ html[data-theme="win98"] .side-rail-btn,
 html[data-theme="win98"] .tree-act,
 html[data-theme="win98"] .find-bar-btn,
 html[data-theme="win98"] .term-scroll-btn,
-html[data-theme="win98"] .web-nav-btn,
 html[data-theme="win98"] .agent-message-action,
 html[data-theme="win98"] .agent-expand-btn,
 html[data-theme="win98"] .pane-port-cancel {
@@ -351,7 +349,6 @@ html[data-theme="win98"] .side-rail-btn.active,
 html[data-theme="win98"] .tree-act:hover,
 html[data-theme="win98"] .find-bar-btn:hover,
 html[data-theme="win98"] .term-scroll-btn:hover,
-html[data-theme="win98"] .web-nav-btn:hover:not(:disabled),
 html[data-theme="win98"] .agent-message-action:hover,
 html[data-theme="win98"] .agent-expand-btn:hover,
 html[data-theme="win98"] .pane-port-cancel:hover {
@@ -363,8 +360,7 @@ html[data-theme="win98"] .bar-btn:active,
 html[data-theme="win98"] .mini:active,
 html[data-theme="win98"] .htab-add:active,
 html[data-theme="win98"] .side-rail-btn:active,
-html[data-theme="win98"] .side-rail-btn.active,
-html[data-theme="win98"] .web-nav-btn:active {
+html[data-theme="win98"] .side-rail-btn.active {
   box-shadow: var(--w98-down);
 }
 
@@ -383,8 +379,7 @@ html[data-theme="win98"] .agent-refresh-btn,
 html[data-theme="win98"] .agent-remove-btn,
 html[data-theme="win98"] .ssh-manager-action,
 html[data-theme="win98"] .file-open-finder-btn,
-html[data-theme="win98"] .md-code-btn,
-html[data-theme="win98"] .web-status-action {
+html[data-theme="win98"] .md-code-btn {
   height: 23px;
   border: none;
   border-radius: 0;

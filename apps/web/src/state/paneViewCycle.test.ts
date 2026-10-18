@@ -7,12 +7,10 @@ test("Cmd+E follows the full pane-menu order when every view is visible", () => 
   assert.equal(nextCyclablePaneView(undefined), "files");
   assert.equal(nextCyclablePaneView("terminal"), "files");
   assert.equal(nextCyclablePaneView("files"), "git");
-  assert.equal(nextCyclablePaneView("git"), "web");
-  assert.equal(nextCyclablePaneView("web"), "monitor");
-  assert.equal(nextCyclablePaneView("monitor"), "providers");
-  assert.equal(nextCyclablePaneView("providers"), "history");
+  assert.equal(nextCyclablePaneView("git"), "history");
   assert.equal(nextCyclablePaneView("history"), "usage");
-  assert.equal(nextCyclablePaneView("usage"), "terminal");
+  assert.equal(nextCyclablePaneView("usage"), "monitor");
+  assert.equal(nextCyclablePaneView("monitor"), "terminal");
 });
 
 test("Cmd+E skips pane views hidden by Settings", () => {
@@ -24,10 +22,10 @@ test("Cmd+E skips pane views hidden by Settings", () => {
   visibility.history = true;
   visibility.usage = true;
 
-  assert.equal(nextCyclablePaneView("terminal", visibility), "monitor");
-  assert.equal(nextCyclablePaneView("monitor", visibility), "history");
+  assert.equal(nextCyclablePaneView("terminal", visibility), "history");
+  assert.equal(nextCyclablePaneView("monitor", visibility), "terminal");
   assert.equal(nextCyclablePaneView("history", visibility), "usage");
-  assert.equal(nextCyclablePaneView("usage", visibility), "terminal");
+  assert.equal(nextCyclablePaneView("usage", visibility), "monitor");
   assert.equal(nextCyclablePaneView("files", visibility), "terminal");
 });
 
@@ -37,9 +35,7 @@ test("Cmd+E does nothing when no pane view is enabled", () => {
     terminal: false,
     files: false,
     git: false,
-    web: false,
     monitor: false,
-    providers: false,
     history: false,
     usage: false,
   };

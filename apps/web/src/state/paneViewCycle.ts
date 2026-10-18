@@ -6,11 +6,9 @@ export const CYCLABLE_PANE_VIEWS = [
   "terminal",
   "files",
   "git",
-  "web",
-  "monitor",
-  "providers",
   "history",
   "usage",
+  "monitor",
 ] as const satisfies readonly PaneView[];
 
 /** Next visible view. A hidden current view enters at the first visible one. */

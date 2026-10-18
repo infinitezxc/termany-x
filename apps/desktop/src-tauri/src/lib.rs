@@ -582,22 +582,6 @@ fn stop_server(app: tauri::AppHandle) -> usize {
     0
 }
 
-#[tauri::command]
-fn webview_history(app: tauri::AppHandle, label: String, direction: String) -> Result<(), String> {
-    if !label.starts_with("web_") {
-        return Err("invalid webview label".into());
-    }
-    let script = match direction.as_str() {
-        "back" => "history.back()",
-        "forward" => "history.forward()",
-        _ => return Err("invalid history direction".into()),
-    };
-    let webview = app
-        .get_webview(&label)
-        .ok_or_else(|| "webview not found".to_string())?;
-    webview.eval(script).map_err(|e| e.to_string())
-}
-
 /// The window the app was launched with. Extra windows get `main-2`, `main-3`,
 /// … — see `create_window`. Both patterns are listed in the capability file, so
 /// keep the prefix in sync with `capabilities/default.json` if it ever changes.
@@ -615,8 +599,8 @@ struct WindowCounter(AtomicU32);
 /// record, and several windows in the same workspace is the point of having
 /// them. Pages are the exception: a page owns live terminals, the PTY server
 /// keeps exactly one socket per pane (it closes the previous on reattach), and
-/// a browser pane is a native child webview that belongs to one window by
-/// construction. So asking for a page another window holds raises that window
+/// document previews belong to one window. Asking for a page another window
+/// holds raises that window
 /// instead of opening it twice — see `claim_page`.
 #[derive(Default)]
 struct PageClaims(Mutex<HashMap<String, String>>);
@@ -1101,7 +1085,6 @@ pub fn run() {
             stop_server,
             file_drag::start_file_drag,
             frontend_ready_for_open_paths,
-            webview_history,
             confirm_quit,
             get_window_toggle_shortcut,
             set_window_toggle_shortcut,

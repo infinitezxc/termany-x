@@ -14,7 +14,6 @@ export default {
   "settings.language.label": "Interface language",
   "settings.rail.title": "RIGHT TOOLBAR",
   "settings.rail.description": "Choose which pane shortcuts appear on the right side and in pane menus.",
-  "settings.rail.agents": "Agent launcher",
   "settings.rail.note": "The Settings button always stays visible.",
 
   "common.cancel": "Cancel",
@@ -51,7 +50,6 @@ export default {
   "rail.show": "Show panel",
   "rail.hide": "Hide panel",
   "rail.newPane": "New {view} pane",
-  "rail.runAgent": "Run agent",
   "gateway.chooseAgent": "Choose an agent",
   "gateway.agentUnavailable": "Agent unavailable",
   "gateway.manageAgents": "Manage agents",
@@ -270,7 +268,6 @@ export default {
   "pane.view.terminal": "Terminal",
   "pane.view.files": "Files",
   "pane.view.git": "Git diff",
-  "pane.view.web": "Browser",
   "pane.view.monitor": "Activity monitor",
   "pane.view.history": "Session history",
   "pane.view.usage": "Agent usage",

@@ -36,7 +36,6 @@ import { AgentSettings } from "./AgentSettings";
 import { AgentAvatarEditor } from "./AgentIdentityFields";
 import {
   ActivityIcon,
-  AgentIcon,
   ChartIcon,
   CloseIcon,
   ExternalOpenIcon,
@@ -44,10 +43,8 @@ import {
   GearIcon,
   GitBranchIcon,
   HistoryIcon,
-  ProviderIcon,
   RevealFolderIcon,
   TerminalIcon,
-  WebIcon,
 } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
@@ -83,12 +80,9 @@ const RAIL_SETTINGS: Array<{ id: RailItemId; labelKey: string; icon: ReactNode }
   { id: "terminal", labelKey: "pane.view.terminal", icon: <TerminalIcon /> },
   { id: "files", labelKey: "pane.view.files", icon: <FilesIcon /> },
   { id: "git", labelKey: "pane.view.git", icon: <GitBranchIcon /> },
-  { id: "web", labelKey: "pane.view.web", icon: <WebIcon /> },
-  { id: "monitor", labelKey: "pane.view.monitor", icon: <ActivityIcon /> },
-  { id: "agents", labelKey: "settings.rail.agents", icon: <AgentIcon /> },
-  { id: "providers", labelKey: "pane.view.providers", icon: <ProviderIcon /> },
   { id: "history", labelKey: "pane.view.history", icon: <HistoryIcon /> },
   { id: "usage", labelKey: "pane.view.usage", icon: <ChartIcon /> },
+  { id: "monitor", labelKey: "pane.view.monitor", icon: <ActivityIcon /> },
 ];
 
 const CUSTOM_FONT_FAMILY = "__custom__";

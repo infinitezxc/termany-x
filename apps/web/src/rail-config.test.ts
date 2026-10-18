@@ -28,6 +28,11 @@ test("rail visibility keeps known booleans and ignores invalid values", () => {
 test("new or missing rail entries remain visible", () => {
   const visibility = normalizeRailVisibility({ terminal: false });
   assert.equal(visibility.terminal, false);
-  assert.equal(visibility.agents, true);
+  assert.equal(visibility.monitor, true);
   assert.equal(visibility.usage, true);
+});
+
+test("removed rail entries are dropped from saved preferences", () => {
+  assert.deepEqual(Object.keys(normalizeRailVisibility({ web: true, agents: true, providers: true })),
+    ["terminal", "files", "git", "history", "usage", "monitor"]);
 });

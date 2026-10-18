@@ -14,7 +14,6 @@ export default {
   "settings.language.label": "界面语言",
   "settings.rail.title": "右侧工具栏",
   "settings.rail.description": "选择在右侧工具栏和窗格菜单中显示的快捷操作。",
-  "settings.rail.agents": "智能体启动器",
   "settings.rail.note": "设置按钮会始终保留。",
 
   "common.cancel": "取消",
@@ -51,7 +50,6 @@ export default {
   "rail.show": "显示快捷面板",
   "rail.hide": "隐藏快捷面板",
   "rail.newPane": "新建{view}窗格",
-  "rail.runAgent": "运行智能体",
   "gateway.chooseAgent": "选择 Agent",
   "gateway.agentUnavailable": "Agent 已不可用",
   "gateway.manageAgents": "管理 Agent",
@@ -270,7 +268,6 @@ export default {
   "pane.view.terminal": "终端",
   "pane.view.files": "文件",
   "pane.view.git": "Git 差异",
-  "pane.view.web": "浏览器",
   "pane.view.monitor": "活动监视器",
   "pane.view.history": "会话历史",
   "pane.view.usage": "智能体用量",

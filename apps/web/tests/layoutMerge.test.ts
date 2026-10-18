@@ -121,3 +121,26 @@ it("restores retired conversation panes as terminals without changing pane IDs",
   assert.equal(restored.layout.id, "chat");
   assert.equal(restored.focused, "chat");
 });
+
+it("restores nested browser panes as terminals and drops saved browser URLs", async () => {
+  const { restoreTerminalViews } = await import("../src/state/layoutMerge");
+  const workspace = {
+    id: "workspace", title: "Workspace", roots: [{
+      ...page("page"), htabs: [{
+        id: "tab", title: "Tab", focused: "browser",
+        layout: { kind: "split", dir: "row", children: [
+          { kind: "leaf", id: "browser", title: "Browser", view: "web", webUrl: "https://example.com", sshTarget: "dev" },
+          { kind: "leaf", id: "files", title: "Files", view: "files" },
+        ] },
+      }],
+    }],
+  } as unknown as Workspace;
+  const restored = restoreTerminalViews([workspace])[0].roots[0].htabs[0];
+  assert.equal(restored.focused, "browser");
+  assert.equal(restored.layout.kind, "split");
+  if (restored.layout.kind !== "split") return;
+  assert.deepEqual(restored.layout.children[0], {
+    kind: "leaf", id: "browser", title: "Browser", view: "terminal", sshTarget: "dev",
+  });
+  assert.equal(restored.layout.children[1].kind === "leaf" && restored.layout.children[1].view, "files");
+});
