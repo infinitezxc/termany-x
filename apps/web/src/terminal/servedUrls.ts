@@ -116,14 +116,15 @@ const EPHEMERAL_PORT = 49152;
  */
 export function mergeServedUrls(
   ports: number[],
-  seen: Map<number, { url: string; seq: number }>
+  seen: Map<number, { url: string; seq: number }>,
+  forwards: ReadonlyMap<number, number> = new Map(),
 ): ServedUrl[] {
   const labelled: Array<ServedUrl & { seq: number }> = [];
   const bare: ServedUrl[] = [];
-  for (const port of [...new Set(ports)].sort((a, b) => a - b)) {
+  for (const port of [...new Set([...ports, ...forwards.keys()])].sort((a, b) => a - b)) {
     const hit = seen.get(port);
     if (hit) labelled.push({ port, url: hit.url, seq: hit.seq });
-    else if (port < EPHEMERAL_PORT) bare.push({ port, url: `http://localhost:${port}` });
+    else if (port < EPHEMERAL_PORT || forwards.has(port)) bare.push({ port, url: `http://localhost:${port}` });
   }
   labelled.sort((a, b) => b.seq - a.seq);
   return [...labelled.map(({ port, url }) => ({ port, url })), ...bare];
@@ -152,12 +153,15 @@ function key(list: ServedUrl[]): string {
  * nothing changed — useSyncExternalStore compares snapshots by reference.
  */
 function refresh(sessionId: string): void {
-  const ports = livePorts.get(sessionId);
-  const merged = ports?.length
-    ? mergeServedUrls(ports, seenUrls.get(sessionId) ?? new Map())
-    : EMPTY;
   const forwards = activeForwards.get(sessionId);
-  const next = remoteSessions.has(sessionId)
+  // An explicit mapping is a destination even without terminal output or a
+  // successful listener probe, including ports in the ephemeral range.
+  const merged = mergeServedUrls(
+    livePorts.get(sessionId) ?? [],
+    seenUrls.get(sessionId) ?? new Map(),
+    forwards,
+  );
+  const next = remoteSessions.has(sessionId) || forwards?.size
     ? merged.map((entry) => ({
         ...entry,
         remote: true,

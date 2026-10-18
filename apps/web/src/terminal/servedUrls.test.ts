@@ -116,6 +116,22 @@ test("no live ports means no button", () => {
   assert.deepEqual(mergeServedUrls([], new Map([[3000, { url: "http://x:3000/", seq: 1 }]])), []);
 });
 
+test("active mappings appear without a listener probe, including ephemeral ports", () => {
+  const forwards = new Map([[3000, 13000], [62501, 62502]]);
+  assert.deepEqual(mergeServedUrls([], new Map(), forwards), [
+    { port: 3000, url: "http://localhost:3000" },
+    { port: 62501, url: "http://localhost:62501" },
+  ]);
+});
+
+test("mapped listeners remain deduplicated and keep their announced URL", () => {
+  const seen = new Map([[62501, { url: "https://localhost:62501/app?mode=dev", seq: 1 }]]);
+  assert.deepEqual(mergeServedUrls([62501, 62503], seen, new Map([[62501, 13000]])), [
+    { port: 62501, url: "https://localhost:62501/app?mode=dev" },
+  ]);
+  assert.deepEqual(mergeServedUrls([], seen), []);
+});
+
 test("a forwarded remote URL keeps its protocol, path, and query on the local port", () => {
   assert.equal(
     servedUrlBrowserUrl({
