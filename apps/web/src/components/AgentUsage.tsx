@@ -21,8 +21,9 @@ interface UsageRow {
 
 /**
  * Best-effort $/MTok price list for cost estimation (first-party Standard
- * short-context rates). Prefix-matched in order against the model id recorded in the
- * transcripts, so a more specific id must come before its family prefix.
+ * short-context rates). Substring-matched in order against the model id recorded
+ * in transcripts, allowing provider prefixes such as `eu.anthropic.`. A more
+ * specific id must come before its family prefix.
  * Unmatched models still count toward token totals but are excluded from the
  * cost card (with a note). Cache writes are derived from the input price:
  * 1.25x for the 5-minute TTL, 2x for the 1-hour TTL Claude Code uses. Cache
@@ -59,7 +60,7 @@ const PRICING: Array<{ prefix: string; input: number; output: number; cacheRead:
 ];
 
 function priceFor(model: string) {
-  return PRICING.find((p) => model.startsWith(p.prefix)) ?? null;
+  return PRICING.find((p) => model.includes(p.prefix)) ?? null;
 }
 
 function rowCost(r: UsageRow): number | null {
