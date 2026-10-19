@@ -12,7 +12,8 @@
  *
  * Two shapes report a job that never moves, and both have to stay harmless:
  * Windows conpty reports the shell for the life of the session, and an ssh
- * session's local foreground job is `ssh` no matter what runs at the far end.
+ * session's local foreground job is `ssh` no matter what runs at the far end
+ * (SSH panes use the remote terminal's process group instead; see remoteForeground.ts).
  * Callers must therefore act on the away-and-back transition rather than on
  * the standing value, so that a job which never leaves the shell concludes
  * nothing at all.

@@ -82,8 +82,9 @@ export function sshArgsForConnection(value: string): string[] {
  * directory. Kept apart from the connection args because the port-forwarding
  * control and probe commands reuse those and must not inherit a remote command.
  */
-export function sshInteractiveArgsForConnection(value: string, args: string[]): string[] {
+export function sshInteractiveArgsForConnection(value: string, args: string[], trackForeground = false): string[] {
   const remoteDir = remoteDirForConnection(value);
+  if (trackForeground) return ["-t", ...args, sshRemoteDirCommand(remoteDir ?? "", true)];
   return remoteDir ? ["-t", ...args, sshRemoteDirCommand(remoteDir)] : args;
 }
 
@@ -99,10 +100,11 @@ export function remoteDirForConnection(value: string): string | undefined {
  * `sh`. The directory travels as a positional argument, never as script text.
  * A missing directory still leaves the user in a login shell.
  */
-export function sshRemoteDirCommand(dir: string): string {
+export function sshRemoteDirCommand(dir: string, trackForeground = false): string {
   const script =
     'd=$1; case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac; ' +
-    'cd -- "$d" || printf "termany: cannot open %s\\n" "$1" >&2; ' +
+    'if [ -n "$d" ]; then cd -- "$d" || printf "termany: cannot open %s\\n" "$1" >&2; fi; ' +
+    (trackForeground ? 's=${SHELL:-/bin/sh}; printf "\\033]779;termany-shell;%s;%s\\007" "$$" "${s##*/}"; ' : '') +
     'exec "${SHELL:-/bin/sh}" -l';
   return `exec sh -c ${shellQuote(script)} termany ${shellQuote(dir)}`;
 }

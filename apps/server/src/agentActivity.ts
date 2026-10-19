@@ -253,15 +253,21 @@ export class AgentActivityTracker {
    * This is the one observation here that cannot be staged by output: the
    * shell taking the terminal back is proof the agent process is gone, where
    * the rendered screen can only recognize a prompt by how it looks. An agent
-   * that exits therefore settles its task immediately instead of waiting out
+   * that exits therefore clears its status immediately instead of waiting out
    * the quiet window.
    *
-   * Only the away-and-back transition counts. A session whose job never
-   * leaves the shell — Windows conpty, or ssh, where the local job is `ssh`
-   * for its whole life — must conclude nothing, and neither must the gap
+   * Normally only the away-and-back transition counts. An authoritative
+   * remote process-group read may also clear a settled status directly.
+   * A local job that never leaves the shell — Windows conpty, for example —
+   * must conclude nothing, and neither must the gap
    * between Enter and the agent actually taking the foreground.
    */
-  noteForegroundJob(id: string, job: string, shellJob: string): void {
+  noteForegroundJob(
+    id: string,
+    job: string,
+    shellJob: string,
+    authoritative = false,
+  ): void {
     // node-pty types `process` as a string but hands back null while a process
     // group is changing hands, which is exactly when this gets sampled.
     if (typeof job !== "string" || !job.trim() || !shellJob.trim()) return;
@@ -270,7 +276,11 @@ export class AgentActivityTracker {
       stream.sawForegroundCommand = true;
       return;
     }
-    if (!stream.sawForegroundCommand) return;
+    // An exact remote process-group read can also repair a settled status
+    // whose away transition happened while the client was disconnected.
+    const settled = this.activities.get(id)?.status;
+    const confirmedSettledShell = authoritative && (settled === "done" || settled === "error");
+    if (!stream.sawForegroundCommand && !confirmedSettledShell) return;
     stream.sawForegroundCommand = false;
     const activeChanged = stream.agentActive;
     stream.agentActive = false;
@@ -278,14 +288,14 @@ export class AgentActivityTracker {
     stream.agent = undefined;
     stream.outputTail = "";
     const current = this.activities.get(id);
-    // Only work in flight is settled by this. A question already asked is
-    // still owed an answer, and a finished task keeps the epoch it finished
-    // under so the client can still acknowledge it.
-    if (current?.status !== "working") {
+    // Activity describes a live agent. A blocked question is no longer
+    // actionable once its process exits, including while clients detach.
+    if (!current) {
       if (activeChanged) this.onChange?.();
       return;
     }
-    this.setCurrent(id, "done", current.taskEpoch, current.agent);
+    this.activities.delete(id);
+    this.onChange?.();
   }
 
   /** Apply a rendered-screen idle observation only to the task it observed. */
@@ -294,15 +304,17 @@ export class AgentActivityTracker {
     if (!current || current.taskEpoch !== taskEpoch) return false;
     const stream = this.stream(id);
     if (stream.taskEpoch !== taskEpoch) return false;
-    const activeChanged = stream.agentActive !== agentActive;
+    if (agentActive && !stream.agentActive) return false;
     stream.agentActive = agentActive;
     stream.awaitingRegisteredInput = false;
     if (!agentActive) {
       stream.agent = undefined;
       stream.outputTail = "";
+      this.activities.delete(id);
+      this.onChange?.();
+      return true;
     }
     if (current.status !== "working") {
-      if (activeChanged) this.onChange?.();
       return current.status === "done";
     }
     this.setCurrent(id, "done", taskEpoch, current.agent ?? stream.agent);
@@ -352,40 +364,38 @@ export class AgentActivityTracker {
     if (!current || current.taskEpoch !== taskEpoch) return false;
     const stream = this.stream(id);
     if (stream.taskEpoch !== taskEpoch) return false;
-    const activeChanged = !stream.agentActive;
-    stream.agentActive = true;
+    if (!stream.agentActive) return false;
     stream.awaitingRegisteredInput = false;
-    if (current.status === "error") {
-      if (activeChanged) this.onChange?.();
-      return true;
-    }
+    if (current.status === "error") return true;
     this.setCurrent(id, "error", taskEpoch, current.agent ?? stream.agent);
     return true;
   }
 
-  noteExit(id: string, exitCode: number, signal?: number): void {
+  noteExit(id: string, _exitCode: number, _signal?: number): void {
     const stream = this.stream(id);
     const activeChanged = stream.agentActive;
     stream.agentActive = false;
     stream.awaitingRegisteredInput = false;
+    stream.sawForegroundCommand = false;
+    stream.input = "";
+    stream.pendingOsc = "";
+    stream.agent = undefined;
+    stream.outputTail = "";
     const current = this.activities.get(id);
     if (!current) {
       if (activeChanged) this.onChange?.();
       return;
     }
-    const statusChanged = this.setCurrent(
-      id,
-      exitCode === 0 && !signal ? "done" : "error",
-      current.taskEpoch,
-      current.agent,
-    );
-    if (activeChanged && !statusChanged) this.onChange?.();
+    // A failed/disconnected SSH transport is also an ended session. Its
+    // exit details belong in the terminal, not in a live-agent indicator.
+    this.activities.delete(id);
+    this.onChange?.();
   }
 
   /**
-   * Clear green only when the client acknowledges that exact task generation
-   * after the agent has returned control to the shell. While its TUI still
-   * owns input, green is the current state of that live agent session rather
+   * Accept acknowledgements only for that exact task generation after the
+   * agent has returned control to the shell. Exit normally clears it first.
+   * While its TUI still owns input, green is the current state of that live agent session rather
    * than a read-once notification.
    */
   acknowledge(items: AgentActivityAcknowledgement[]): void {

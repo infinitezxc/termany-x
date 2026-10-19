@@ -91,6 +91,16 @@ test("Codex is idle once the answer is on screen", () => {
   assert.equal(agentBusyScreenVisible(screen("codex-answered")), false);
 });
 
+test("Codex completed tool bullets use truncation ellipses without meaning busy", () => {
+  for (const verb of ["Ran", "Explored", "Edited", "Read"]) {
+    assert.equal(agentBusyScreenVisible(`• ${verb} git status &&…`), false);
+  }
+  assert.equal(agentBusyScreenVisible("• Running git status…"), true);
+  assert.equal(agentBusyScreenVisible("• Reading files…"), true);
+  // Explicit interrupt evidence still outranks a completed row.
+  assert.equal(agentBusyScreenVisible("• Ran command…\nesc to interrupt"), true);
+});
+
 test("a trust dialog is a confirmation, not a finished task", () => {
   assert.equal(agentConfirmationPromptVisible(screen("codex-trust-prompt")), true);
 });

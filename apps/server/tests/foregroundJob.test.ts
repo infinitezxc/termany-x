@@ -37,7 +37,7 @@ test("a task ends the moment the shell gets the terminal back", () => {
 
   runAndExit(tracker, "pane-a");
 
-  assert.equal(tracker.snapshot()["pane-a"].status, "done");
+  assert.equal(tracker.snapshot()["pane-a"], undefined);
   assert.deepEqual(tracker.activeSessionIds(), []);
 });
 
@@ -119,18 +119,17 @@ test("a job that reads back as nothing is not a transition", () => {
   assert.equal(tracker.snapshot()["pane-a"].status, "working");
 
   tracker.noteForegroundJob("pane-a", "zsh", "zsh");
-  assert.equal(tracker.snapshot()["pane-a"].status, "done");
+  assert.equal(tracker.snapshot()["pane-a"], undefined);
 });
 
-test("a blocked task is not finished by the shell returning", () => {
-  // Waiting on a person outranks the prompt coming back: the agent that asked
-  // may well have exited, but the question was never answered.
+test("a blocked task clears when its agent returns to the shell", () => {
+  // A question from an exited agent is no longer actionable.
   const tracker = new AgentActivityTracker();
   tracker.register("pane-a", "claude");
   tracker.reportBlocked("pane-a", 1);
 
   runAndExit(tracker, "pane-a");
 
-  assert.equal(tracker.snapshot()["pane-a"].status, "error");
+  assert.equal(tracker.snapshot()["pane-a"], undefined);
   assert.deepEqual(tracker.activeSessionIds(), []);
 });

@@ -32,7 +32,9 @@ async function runInShell(command: string, holdMs: number, ignoreTaskOutput = fa
   const seen = new Map<string, number>();
   const record = () => {
     const status = tracker.snapshot()["pane-a"]?.status ?? "none";
-    if (!seen.has(status)) seen.set(status, Date.now() - startedAt);
+    if (status !== "none" || taskStarted) {
+      if (!seen.has(status)) seen.set(status, Date.now() - startedAt);
+    }
   };
 
   // Wired as index.ts wires it: the first settled read is the shell's own
@@ -70,23 +72,23 @@ async function runInShell(command: string, holdMs: number, ignoreTaskOutput = fa
 test("the shell taking the terminal back settles the task", { skip }, async () => {
   const run = await runInShell("sleep 1", 2_500);
 
-  assert.equal(typeof run.statusAt("done"), "number", "the task never settled");
+  assert.equal(typeof run.statusAt("none"), "number", "the task never settled");
   // Not before the command released the terminal, and not long after either:
   // the quiet-window heuristic would not have called it until 2s.
   assert.ok(
-    run.statusAt("done")! > 1_000,
-    `settled at ${run.statusAt("done")}ms, before the command had exited`,
+    run.statusAt("none")! > 1_000,
+    `settled at ${run.statusAt("none")}ms, before the command had exited`,
   );
   assert.ok(
-    run.statusAt("done")! < 2_000,
-    `settled at ${run.statusAt("done")}ms, no earlier than the screen heuristic`,
+    run.statusAt("none")! < 2_000,
+    `settled at ${run.statusAt("none")}ms, no earlier than the screen heuristic`,
   );
 });
 
 test("a command still holding the terminal leaves the task working", { skip }, async () => {
   const run = await runInShell("sleep 5", 1_500);
 
-  assert.equal(run.statusAt("done"), undefined, "settled while the command was still running");
+  assert.equal(run.statusAt("none"), undefined, "settled while the command was still running");
   assert.equal(typeof run.statusAt("working"), "number");
 });
 
@@ -94,12 +96,12 @@ test("periodic reconciliation clears working without output or an attached clien
   // Ignore all task output: only independent foreground samples can observe
   // both the running command and the return to the shell.
   const run = await runInShell("sleep 2.5", 4_500, true);
-  assert.equal(typeof run.statusAt("done"), "number");
-  assert.ok(run.statusAt("done")! > 2_500, "must not finish before the process exits");
+  assert.equal(typeof run.statusAt("none"), "number");
+  assert.ok(run.statusAt("none")! > 2_500, "must not finish before the process exits");
 });
 
 test("periodic reconciliation keeps a silent running task yellow", { skip }, async () => {
   const run = await runInShell("sleep 8", 4_500, true);
-  assert.equal(run.statusAt("done"), undefined);
+  assert.equal(run.statusAt("none"), undefined);
   assert.equal(typeof run.statusAt("working"), "number");
 });

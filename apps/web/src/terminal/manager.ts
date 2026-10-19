@@ -25,6 +25,7 @@ import {
   AgentIdleWatcher,
   type AgentScreenTransition,
 } from "./agentIdleWatcher";
+import { readAgentScreen } from "./agentScreenView";
 import { SYMBOLS_FONT_FAMILY, withSymbolsFallback } from "./fonts";
 import { registerLocalPathLinks } from "./localLinks";
 import { registerOsc52 } from "./osc52";
@@ -401,11 +402,7 @@ function applyAgentActivityPayload(payload: any) {
   const activeBefore = [...agentActiveSessions].sort().join("|");
   const activeAfter = [...nextActiveSessions].sort().join("|");
   if (before === after && activeBefore === activeAfter) {
-    for (const [id, activity] of next) {
-      if (activity.status === "working" || activity.status === "done") {
-        completeAgentActivityIfIdle(id);
-      }
-    }
+    for (const id of next.keys()) completeAgentActivityIfIdle(id);
     return;
   }
 
@@ -424,11 +421,7 @@ function applyAgentActivityPayload(payload: any) {
   agentActiveSessions.clear();
   for (const id of nextActiveSessions) agentActiveSessions.add(id);
   notifyAgentActivity();
-  for (const [id, activity] of next) {
-    if (activity.status === "working" || activity.status === "done") {
-      completeAgentActivityIfIdle(id);
-    }
-  }
+  for (const id of next.keys()) completeAgentActivityIfIdle(id);
 }
 
 function ensureAgentActivitySync() {
@@ -568,14 +561,7 @@ function observeScreenForActivity(id: string): RenderedAgentTransition | null {
   const session = sessions.get(id);
   if (!session) return null;
   const watcher = agentIdleWatcher(id);
-  watcher.update(
-    {
-      visible: sessionVisibleText(id),
-      cursorLine: sessionCursorLine(id),
-      isAlternate: session.term.buffer.active.type === "alternate",
-    },
-    Date.now(),
-  );
+  watcher.update(readAgentScreen(session.term), Date.now());
   return watcher.pending;
 }
 
@@ -593,21 +579,25 @@ function completeAgentActivityIfIdle(id: string) {
   // a screen the agent still owned, may be taken back that way — a done the
   // pty proved (an agent that exited, an OSC report) is not the screen's to
   // overturn, and a question waiting on a person is never demoted to work in
-  // progress. Only the live screen may say so — a viewport scrolled into
-  // history replays old spinner rows, hence the follow guard.
+  // progress. The detector reads the live screen even when the user scrolls
+  // into history, so historical spinner rows cannot influence the decision.
   if (
     activity.status === "done" &&
     agentRetractableEpochs.get(id) === activity.taskEpoch &&
     agentReportedInactiveEpochs.get(id) !== activity.taskEpoch &&
     transition === null &&
-    agentIdleWatcher(id).busyVisible &&
-    session.followOutput
+    agentIdleWatcher(id).busyVisible
   ) {
     clearAgentIdleTimer(id);
     resumeAgentActivity(id, activity);
     return;
   }
-  if (activity.status !== "working" && activity.status !== "done") {
+  // Red remains latched while the agent owns input, but a returned shell
+  // clears it just like green, including the first screen after reconnect.
+  if (
+    activity.status === "error" &&
+    (transition?.status !== "done" || transition.agentActive)
+  ) {
     clearAgentIdleTimer(id);
     return;
   }
@@ -663,7 +653,8 @@ function completeAgentActivityIfIdle(id: string) {
       const confirmed = watcher.pending;
       if (
         !latest ||
-        (latest.status !== "working" && latest.status !== "done") ||
+        (latest.status === "error" &&
+          (confirmed?.status !== "done" || confirmed.agentActive)) ||
         latest.taskEpoch !== observedEpoch ||
         !confirmed ||
         confirmed.status !== observedStatus ||
@@ -2373,21 +2364,7 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
 function sessionVisibleText(id: string): string {
   const session = sessions.get(id);
   if (!session) return "";
-  const buf = session.term.buffer.active;
-  const start = Math.max(0, buf.viewportY);
-  const end = Math.min(buf.length, start + session.term.rows);
-  // Soft-wrapped rows are rejoined into the line the program printed, so a
-  // prompt wider than the pane still reads as one prompt line — the detectors
-  // judge a screen by its last line, which would otherwise be a wrapped tail.
-  // Untrimmed until joined: a wrap can fall on a space.
-  const lines: string[] = [];
-  for (let y = start; y < end; y++) {
-    const line = buf.getLine(y);
-    const text = line?.translateToString(false) ?? "";
-    if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
-    else lines.push(text);
-  }
-  return lines.map((line) => line.trimEnd()).join("\n");
+  return readAgentScreen(session.term).visible;
 }
 
 /** The visible screen reduced to what only real work could have changed. */
@@ -2398,13 +2375,7 @@ function sessionScreenSignature(id: string): string {
 function sessionCursorLine(id: string): string {
   const session = sessions.get(id);
   if (!session) return "";
-  const buf = session.term.buffer.active;
-  return (
-    buf
-      .getLine(buf.baseY + buf.cursorY)
-      ?.translateToString(true)
-      .trimEnd() ?? ""
-  );
+  return readAgentScreen(session.term).cursorLine;
 }
 
 /** Permanently destroy a session — only when the user closes the pane/tab. */

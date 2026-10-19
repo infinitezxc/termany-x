@@ -80,6 +80,9 @@ const BUSY_INTERRUPT_RE =
 /** Input that was accepted but not started still owes the user an answer. */
 const BUSY_QUEUED_INPUT_RE =
   /\bqueued\s+(?:follow-?up\s+)?(?:input|message|prompt)s?\b/i;
+/** Codex leaves completed tool bullets on screen, truncating them with … too. */
+const COMPLETED_TOOL_ROW_RE =
+  /^[•●]\s+(?:ran|explored|edited|added|deleted|updated|read|viewed|searched|listed|opened)\b/i;
 /**
  * A spinner row whose label trails off. Claude Code draws its verb from a
  * rotating pool ("Canoodling…", "Simmering…"), so no word list can keep up —
@@ -153,6 +156,7 @@ export function agentBusyScreenVisible(visible: string): boolean {
       return true;
     }
     const cleaned = cleanRow(row);
+    if (COMPLETED_TOOL_ROW_RE.test(cleaned)) return false;
     return BUSY_SPINNER_RE.test(cleaned) || BUSY_SPINNER_VERB_RE.test(cleaned);
   });
 }

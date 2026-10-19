@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
+import { REMOTE_FOREGROUND_SCRIPT, RemoteShellIdentity, remoteForegroundIsShell } from "./remoteForeground.js";
 import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage } from "./agentSessions.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
@@ -533,8 +534,30 @@ function wireSession(id: string | undefined, session: PtySession): void {
   // reads the name the shell answers to rather than the command it was
   // spawned from, and why an unmoving job has to conclude nothing.
   let shellJob = "";
+  const remoteShell = new RemoteShellIdentity();
+  let probingRemote = false;
   session.reconcileActivity = () => {
-    if (!id || !shellJob || ptySessions.get(id) !== session) return;
+    if (!id || ptySessions.get(id) !== session) return;
+    if (session.sshTarget) {
+      const pid = remoteShell.pid;
+      const shellName = remoteShell.shellName;
+      const args = sshPortForwarding.execArgs(id);
+      const epoch = activityTracker.snapshot()[id]?.taskEpoch;
+      if (!pid || !shellName || !args || probingRemote || !epoch) return;
+      probingRemote = true;
+      void remoteSh(args, REMOTE_FOREGROUND_SCRIPT, [String(pid)], { maxBytes: 4096 })
+        .then((output) => {
+          if (ptySessions.get(id) !== session || activityTracker.snapshot()[id]?.taskEpoch !== epoch) return;
+          const isShell = remoteForegroundIsShell(output.toString("utf8"), pid, shellName);
+          if (isShell !== undefined) {
+            activityTracker.noteForegroundJob(id, isShell ? "shell" : "foreground", "shell", true);
+          }
+        })
+        .catch(() => { /* An unavailable remote job proves nothing. */ })
+        .finally(() => { probingRemote = false; });
+      return;
+    }
+    if (!shellJob) return;
     try {
       activityTracker.noteForegroundJob(id, session.pty.process || "", shellJob);
     } catch {
@@ -553,6 +576,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
   /** Everything a client should see: live output, plus the progress bar a
    *  transfer draws while it runs. Also what history records. */
   const emit = (data: string) => {
+    if (session.sshTarget) remoteShell.noteOutput(data);
     if (isOpen(session.ws)) session.ws.send(data);
     ringAppend(session.ring, data);
     if (id) {
@@ -2177,7 +2201,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
         sshArgs = prepared.args;
         sshControlPath = prepared.controlPath;
       }
-      sshArgs = sshInteractiveArgsForConnection(sshTarget, sshArgs);
+      sshArgs = sshInteractiveArgsForConnection(sshTarget, sshArgs, true);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
