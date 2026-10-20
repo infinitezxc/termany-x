@@ -6,6 +6,7 @@ import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
+import { parseMarkdownTable } from "../markdownTable";
 import { useI18n } from "../i18n";
 import { useFileDrag } from "../fileDrag";
 import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
@@ -305,7 +306,8 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
     list = [];
   };
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
     if (code) {
       if (/^```/.test(line)) {
         blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} />);
@@ -322,6 +324,33 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
     if (!line.trim()) {
       flushParagraph();
       flushList();
+      continue;
+    }
+    const table = parseMarkdownTable(lines, lineIndex);
+    if (table) {
+      flushParagraph();
+      flushList();
+      blocks.push(
+        <div className="markdown-preview-table" key={`t-${blocks.length}`}>
+          <table>
+            <thead>
+              <tr>{table.headers.map((cell, index) => (
+                <th key={index} scope="col" style={{ textAlign: table.alignments[index] }}>
+                  {inlineMarkdown(cell, baseDir, remote)}
+                </th>
+              ))}</tr>
+            </thead>
+            <tbody>{table.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>{row.map((cell, index) => (
+                <td key={index} style={{ textAlign: table.alignments[index] }}>
+                  {inlineMarkdown(cell, baseDir, remote)}
+                </td>
+              ))}</tr>
+            ))}</tbody>
+          </table>
+        </div>
+      );
+      lineIndex = table.nextIndex - 1;
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);

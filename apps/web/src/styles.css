@@ -3371,6 +3371,30 @@ html.tauri #root {
   border-top: 1px solid var(--border);
   margin: 18px 0;
 }
+.markdown-preview-table {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+.markdown-preview-table table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+}
+.markdown-preview-table th,
+.markdown-preview-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-preview-table th {
+  background: var(--bg-3);
+  font-weight: 600;
+}
+.markdown-preview-table tbody tr:nth-child(even) {
+  background: var(--bg-2);
+}
 .html-preview {
   flex: 1;
   min-height: 0;
