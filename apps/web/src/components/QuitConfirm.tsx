@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isTauri } from "../env";
 import { useNativeOccluder } from "../nativeViewOcclusion";
+import { flushTerminalHistory } from "../terminal/scroll";
 
 /**
  * Confirms before the app actually quits. The Rust side always intercepts
@@ -13,6 +14,7 @@ import { useNativeOccluder } from "../nativeViewOcclusion";
  */
 export function QuitConfirm() {
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const backdropRef = useNativeOccluder<HTMLDivElement>("quit-confirm", open);
 
   useEffect(() => {
@@ -42,8 +44,17 @@ export function QuitConfirm() {
 
   if (!open) return null;
 
-  const quit = () => {
-    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("confirm_quit"));
+  const quit = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await flushTerminalHistory();
+    } catch (error) {
+      // A server that is already unavailable must not prevent quitting.
+      console.error("[termany] final history save failed:", error);
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("confirm_quit");
   };
 
   return (
@@ -54,8 +65,8 @@ export function QuitConfirm() {
           <button className="ws-dialog-btn" onClick={() => setOpen(false)}>
             Cancel
           </button>
-          <button className="ws-dialog-btn primary" autoFocus onClick={quit}>
-            Quit
+          <button className="ws-dialog-btn primary" autoFocus disabled={saving} onClick={() => void quit()}>
+            {saving ? "Saving…" : "Quit"}
           </button>
         </div>
       </div>

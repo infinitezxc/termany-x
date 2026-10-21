@@ -5,6 +5,7 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 setGlobalDispatcher(new EnvHttpProxyAgent());
 
 import { spawn } from "node-pty";
+import { TerminalState } from "./terminalState.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { verifyFileSize } from "./fileDrag.js";
@@ -55,12 +56,15 @@ import {
 import {
   forgetSessions,
   getAllScreens,
+  getAllHistories,
+  getHistory,
   getAllScroll,
   getScroll,
   getSessionCwd,
   loadState,
   saveState,
   setScreenBatch,
+  setHistoryBatch,
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
@@ -345,6 +349,17 @@ function sanitizeForReplay(data: string): string {
   );
 }
 
+/** Compatibility for histories saved before the server retained rendered state. */
+function legacyHistory(data: string, screen?: string): string {
+  const replay = sanitizeForReplay(data);
+  return screen === undefined ? replay : replay +
+    "\x1b[?1049l\x1b[0m\r\n\x1b[2m── screen at last quit ──\x1b[0m\r\n" + screen + "\r\n";
+}
+
+function savedTerminalHistory(id: string) {
+  return getHistory(id) ?? legacyHistory(getScroll(id) ?? "", getAllScreens()[id]);
+}
+
 const IMAGE_EXT_BY_MIME: Record<string, string> = {
   "image/gif": "gif",
   "image/jpeg": "jpg",
@@ -393,6 +408,8 @@ async function savePastedImage(body: any): Promise<{ path: string }> {
 
 interface PtySession {
   pty: ReturnType<typeof spawn>;
+  terminal: TerminalState;
+  restoring?: WebSocket;
   ring: ScrollRing;
   ws: WebSocket | null;
   detachedAt: number | null;
@@ -526,8 +543,25 @@ function reconcileAgentActivities(): void {
 // window. Sample independently of output and of whether a client is attached.
 setInterval(reconcileAgentActivities, 2_000).unref();
 
+/** The same snapshot-first handshake initializes new shells and reattachments. */
+function sendTerminalSnapshot(session: PtySession, ws: WebSocket): void {
+  session.restoring = ws;
+  void session.terminal.snapshot((snapshot) => {
+    if (session.ws !== ws || !isOpen(ws)) return;
+    ws.send(JSON.stringify({ type: "restore", snapshot }), { binary: true });
+    session.restoring = undefined;
+  });
+}
+
 /** Wire a freshly spawned pty's output into its ring + whatever ws is attached. */
 function wireSession(id: string | undefined, session: PtySession): void {
+  session.terminal.onResponse((data) => {
+    // A detached Codex can ask for its cursor position before drawing. Answer
+    // from the retained screen then; attached clients answer their own queries.
+    if (!isOpen(session.ws) || session.restoring === session.ws) {
+      try { session.pty.write(data); } catch { /* process already exited */ }
+    }
+  });
   // The PTY's foreground process group: proof of when a command — an agent
   // included — hands the terminal back, where the rendered screen can only
   // recognize a prompt by how it looks. See foregroundJob.ts for why this
@@ -577,7 +611,9 @@ function wireSession(id: string | undefined, session: PtySession): void {
    *  transfer draws while it runs. Also what history records. */
   const emit = (data: string) => {
     if (session.sshTarget) remoteShell.noteOutput(data);
-    if (isOpen(session.ws)) session.ws.send(data);
+    session.terminal.write(data, () => {
+      if (isOpen(session.ws) && session.restoring !== session.ws) session.ws.send(data);
+    });
     ringAppend(session.ring, data);
     if (id) {
       activityTracker.noteOutput(id, data);
@@ -597,43 +633,45 @@ function wireSession(id: string | undefined, session: PtySession): void {
   session.transfer = transfer;
   session.pty.onData((data) => transfer.fromShell(data));
   session.pty.onExit(({ exitCode, signal }) => {
-    jobSampler.dispose();
-    session.reconcileActivity = undefined;
-    oscCwdByPid.delete(session.pty.pid);
-    console.error(
-      `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
-    );
-    if (isOpen(session.ws)) {
-      // Local shells retain the detailed exit line before the frontend starts
-      // a replacement. SSH exits are rendered by the frontend so the message
-      // can follow the selected interface language.
-      if (!session.sshTarget) {
-        session.ws.send(
-          `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
-        );
+    void session.terminal.history((snapshot) => {
+      session.terminal.dispose();
+      jobSampler.dispose();
+      session.reconcileActivity = undefined;
+      oscCwdByPid.delete(session.pty.pid);
+      console.error(
+        `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
+      );
+      if (isOpen(session.ws)) {
+        // Local shells retain the detailed exit line before the frontend starts
+        // a replacement. SSH exits are rendered by the frontend so the message
+        // can follow the selected interface language.
+        if (!session.sshTarget) {
+          session.ws.send(
+            `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
+          );
+        }
+        session.ws.close(SHELL_EXIT_CLOSE_CODE, encodeShellExit(exitCode, signal));
       }
-      session.ws.close(SHELL_EXIT_CLOSE_CODE, encodeShellExit(exitCode, signal));
-    }
-    if (id) {
-      // A pane can replace its shell and immediately reuse this id. The old
-      // process may report exit later; it must not remove the replacement or
-      // overwrite the replacement's activity and restore history.
-      if (ptySessions.get(id) !== session) return;
-      activityTracker.noteExit(id, exitCode, signal);
-      sshPortForwarding.remove(id);
-      // Natural exit — flush final history so it still restores as plain
-      // scrollback (cwd/history stay in the DB; only /api/forget wipes them).
-      if (session.ring.dirty) {
+      if (id) {
+        // A pane can replace its shell and immediately reuse this id. The old
+        // process may report exit later; it must not remove the replacement or
+        // overwrite the replacement's activity and restore history.
+        if (ptySessions.get(id) !== session) return;
+        activityTracker.noteExit(id, exitCode, signal);
+        sshPortForwarding.remove(id);
+        // Natural exit — flush final history so it still restores as plain
+        // scrollback (cwd/history stay in the DB; only /api/forget wipes them).
         try {
-          setScrollBatch({ [id]: session.ring.chunks.join("") });
+          setHistoryBatch({ [id]: snapshot });
+          if (session.ring.dirty) setScrollBatch({ [id]: session.ring.chunks.join("") });
         } catch {
           /* best-effort */
         }
+        ptySessions.delete(id);
+      } else {
+        ephemeralSessions.delete(session);
       }
-      ptySessions.delete(id);
-    } else {
-      ephemeralSessions.delete(session);
-    }
+    });
   });
 }
 
@@ -716,6 +754,17 @@ function flushScroll(): void {
 }
 
 setInterval(flushScroll, 10_000).unref();
+
+async function flushRenderedHistory(): Promise<void> {
+  const histories: Parameters<typeof setHistoryBatch>[0] = {};
+  await Promise.all([...ptySessions].map(([id, session]) => session.terminal.history((snapshot) => {
+    if (ptySessions.get(id) === session) histories[id] = snapshot;
+  })));
+  setHistoryBatch(histories);
+}
+setInterval(() => {
+  void flushRenderedHistory().catch((error) => console.error("[termany] history flush failed:", error));
+}, 10_000).unref();
 
 // One HTTP server hosts both the WebSocket upgrade (PTY sessions) and a small
 // JSON API (POST /api/theme — AI theme generation, key stays server-side).
@@ -1091,25 +1140,22 @@ const http = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/api/scroll") {
     const merged = getAllScroll();
     for (const [id, session] of ptySessions) merged[id] = session.ring.chunks.join("");
-    for (const id of Object.keys(merged)) merged[id] = sanitizeForReplay(merged[id]);
-    for (const [id, text] of Object.entries(getAllScreens())) {
-      merged[id] =
-        (merged[id] ?? "") +
-        "\x1b[?1049l\x1b[0m\r\n\x1b[2m── screen at last quit ──\x1b[0m\r\n" +
-        text +
-        "\r\n";
+    const screens = getAllScreens();
+    for (const id of new Set([...Object.keys(merged), ...Object.keys(screens)])) {
+      merged[id] = legacyHistory(merged[id] ?? "", screens[id]);
     }
-    json(200, merged);
+    // Rendered snapshots retain real scrollback even after a redraw-heavy TUI
+    // exhausts the raw ring. Old installs still fall back to raw replay above.
+    json(200, { ...merged, ...getAllHistories() });
     return;
   }
-  // sendBeacon target: persist all in-memory history NOW — the window is going
-  // away and the app may SIGKILL this server before the next timed flush. The
-  // body (optional) carries final-screen captures of sessions inside a TUI;
-  // null entries clear a stale capture for sessions back on the primary screen.
+  // Persist rendered histories and raw rings before acknowledging a quit save.
+  // Legacy clients may still send final-screen captures via sendBeacon.
   if (req.method === "POST" && req.url === "/api/scroll/flush") {
     readJson(req)
-      .then((body) => {
+      .then(async (body) => {
         setScreenBatch(body?.screens ?? {});
+        await flushRenderedHistory();
         flushScroll();
         res.writeHead(204).end();
       })
@@ -2076,6 +2122,9 @@ wss.on("connection", async (ws: WebSocket, req) => {
     }
     existing.ws = ws;
     existing.detachedAt = null;
+    if (url.searchParams.get("restore") === "1") {
+      sendTerminalSnapshot(existing, ws);
+    }
 
     ws.on("message", (raw) => {
       let msg: ClientMessage;
@@ -2090,6 +2139,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
       }
       else if (msg.type === "resize") {
         try {
+          existing.terminal.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
           existing.pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
         } catch {
           /* race during teardown */
@@ -2139,6 +2189,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
       if (!session.transfer?.fromClient(msg.data)) session.pty.write(msg.data);
     } else if (msg.type === "resize") {
       try {
+        session.terminal.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
         session.pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
       } catch {
         /* race during teardown */
@@ -2237,6 +2288,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   session = {
     pty,
+    terminal: new TerminalState(sessionId ? savedTerminalHistory(sessionId) : undefined),
     ring: sessionId ? newRing(sessionId) : { chunks: [], bytes: 0, dirty: false },
     ws,
     detachedAt: null,
@@ -2251,6 +2303,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
   wireSession(sessionId ?? undefined, session);
 
   pendingMessages.splice(0).forEach(applyClientMessage);
+  if (url.searchParams.get("restore") === "1") sendTerminalSnapshot(session, ws);
 });
 
 // Kill every spawned shell when the server process itself is stopped (dev
@@ -2263,6 +2316,7 @@ async function shutdown() {
   // a clean quit restores them exactly. Bounded so we never hang the exit.
   await Promise.race([sweepCwds(), new Promise((r) => setTimeout(r, 800))]).catch(() => {});
   flushScroll();
+  await flushRenderedHistory();
   for (const session of ptySessions.values()) {
     try {
       session.pty.kill();

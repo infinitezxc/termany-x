@@ -1,3 +1,10 @@
+/** A rendered terminal buffer and the grid required to replay its wrapped rows. */
+export interface TerminalSnapshot {
+  data: string;
+  cols: number;
+  rows: number;
+}
+
 /**
  * The single seam between "the terminal UI" and "where the shell actually runs".
  *
@@ -13,6 +20,8 @@
 export interface ITerminalBackend {
   /** Register the callback that receives raw terminal output (server -> UI). */
   onData(cb: (data: string) => void): void;
+  /** An atomic snapshot of a still-running PTY, preceding subsequent output. */
+  onRestore?(cb: (snapshot: TerminalSnapshot) => void): void;
   /** Send user keystrokes / input to the shell (UI -> server). */
   write(data: string): void;
   /** Ask the session to upload local paths to the remote (SSH panes). */

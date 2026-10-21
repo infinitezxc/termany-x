@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/headless": "^5.5.0",
     "node-pty": "^1.0.0",
     "trzsz": "^1.1.6",
     "undici": "^8.5.0",

@@ -7,7 +7,7 @@ import { loadState, startStateSync, waitForServer } from "./state/sync";
 import { useStore } from "./state/store";
 import { revealWindow } from "./state/windows";
 import "./styles.css";
-import { loadSnapshots, startScrollSync } from "./terminal/scroll";
+import { startScrollSync } from "./terminal/scroll";
 import { applyTheme, loadAiThemes, loadThemeId, storedThemeId, THEMES } from "./themes";
 import { hydrateCodexTheme, isCodexPackTheme } from "./themes/codex-packs";
 
@@ -55,15 +55,11 @@ if (isDemo) {
   });
 }
 
-// Wait for the bundled server (it boots in parallel and usually loses the race),
-// THEN hydrate the workspace/tab layout AND the saved terminal scrollback from
-// it (SQLite) BEFORE first render, then start syncing both back. Rendering
-// after means we never flash empty tabs and snapshots are ready before the first
-// terminal attaches (so its restored screen is in place before the shell paints).
-// If the server never answers we render anyway (degraded), but state saves stay
-// disabled so the real layout in SQLite can't be clobbered by our defaults.
+// Hydrate the workspace layout before rendering. Terminal connections receive
+// their own snapshot from the server before live output starts.
+// If the server never answers, render in degraded mode with state saves disabled.
 waitForServer().then(() =>
-  Promise.allSettled([loadState(), loadSnapshots()]).finally(() => {
+  loadState().catch(() => {}).then(() => {
     startStateSync();
     startScrollSync();
     ReactDOM.createRoot(document.getElementById("root")!).render(

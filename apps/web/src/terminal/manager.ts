@@ -1,4 +1,4 @@
-import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
+import { WebSocketBackend, restoreTerminalSnapshot, STALE_MODE_RESET, type ITerminalBackend, type TerminalSnapshot } from "@termany/core";
 import { getLanguage, translate } from "../i18n";
 import { loadFontConfig } from "../font-config";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -68,6 +68,7 @@ export interface Session {
   search: SearchAddon;
   backend: ITerminalBackend;
   opened: boolean;
+  restoring: boolean;
   followOutput: boolean;
   /** Absolute buffer row held in view after the user scrolls away from live output. */
   lockedViewportY: number | null;
@@ -986,26 +987,10 @@ export function agentActivityTitle(
 }
 
 /**
- * Lines of scrollback xterm keeps in memory per terminal. Sized to hold the
- * server's replayed history tail (SCROLL_CAP raw bytes ≈ a few thousand
- * visible lines) with room for the live session on top — going much higher
- * mostly burns webview memory on lines the history cap can't refill anyway.
+ * Lines of scrollback retained in memory and in rendered history snapshots.
+ * The server's capped raw-output ring remains a fallback for older saves.
  */
 const SCROLLBACK_LINES = 5000;
-
-/**
- * History tails from previous runs, keyed by session id, primed once at
- * startup (see scroll.ts). Each is replayed into its terminal the first time
- * that session is created, then dropped so a live session is never overwritten.
- */
-const restoreSnapshots = new Map<string, string>();
-
-/** Seed the saved histories before any session is attached (startup only). */
-export function primeSnapshots(snapshots: Record<string, string>) {
-  for (const [id, data] of Object.entries(snapshots)) {
-    if (data) restoreSnapshots.set(id, data);
-  }
-}
 
 function readScrollState(term: Terminal): TerminalScrollState {
   const buf = term.buffer.active;
@@ -1057,33 +1042,6 @@ export function subscribeTerminalScrollState(
     listeners?.delete(listener);
     if (listeners?.size === 0) scrollListeners.delete(id);
   };
-}
-
-/**
- * The visible screen of every session currently inside the ALTERNATE buffer
- * (fullscreen TUIs: claude, vim, htop…), as plain text — their raw output can't
- * be restored from history because leaving the alt screen discards it. `null`
- * for sessions on the primary screen (their history replay already covers
- * them), which tells the server to clear any stale capture. Sent at quit via
- * the scroll-flush beacon (see scroll.ts).
- */
-export function finalScreens(): Record<string, string | null> {
-  const out: Record<string, string | null> = {};
-  for (const [id, s] of sessions) {
-    if (!s.opened) continue;
-    const buf = s.term.buffer.active;
-    if (buf.type !== "alternate") {
-      out[id] = null;
-      continue;
-    }
-    const lines: string[] = [];
-    for (let y = 0; y < s.term.rows; y++) {
-      lines.push(buf.getLine(y)?.translateToString(true) ?? "");
-    }
-    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-    out[id] = lines.join("\r\n");
-  }
-  return out;
 }
 
 /**
@@ -1353,17 +1311,6 @@ export function applyFontSize(size: number) {
 }
 
 /**
- * Turn off modes a dead shell's programs may have left on: scroll margins,
- * mouse/focus reporting, bracketed paste, origin mode, application cursor
- * keys/keypad, hidden cursor, line-drawing charset, SGR attributes. Without
- * this, e.g. a tmux killed by a dropped SSH link leaves `?1003` on, and every
- * mouse move types `35;65;47M…` into the next shell.
- */
-const STALE_MODE_RESET =
-  "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
-  "\x1b[?1l\x1b>\x1b[?25h\x1b(B\x0f\x1b[0m";
-
-/**
  * Release a terminal mouse drag whose mouseup never arrived.
  *
  * xterm's SelectionService (and its mouse-tracking drag reporting) attach
@@ -1473,42 +1420,23 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     return true;
   });
 
-  // Replay the previous run's output tail (server-captured, sanitized) ABOVE
-  // the fresh shell, so a reopened pane shows where it left off. The raw replay
-  // can leave the emulator in a mode the dead shell set (alt screen, mouse
-  // reporting, scroll margins, hidden cursor, line-drawing charset…), so
-  // neutralise all of that before drawing the divider. Two hard-won subtleties:
-  //  - `?1049l` is sent ONLY if the replay actually ended inside the alternate
-  //    screen: on the normal screen it performs a cursor RESTORE to a stale
-  //    saved position, teleporting the cursor up into the restored content —
-  //    which the new shell's erase-below then wipes out.
-  //  - The reset runs in write-callbacks (async), so the new shell's first
-  //    output is held in `pendingOutput` until the divider is down; otherwise
-  //    it could interleave into the middle of the reset sequence.
   const pendingOutput: string[] = [];
-  let replaying = false;
-  const snapshot = restoreSnapshots.get(id);
-  if (snapshot) {
-    restoreSnapshots.delete(id);
-    replaying = true;
-    term.write(snapshot, () => {
-      const finishReset = () => {
-        const row = term.buffer.active.cursorY + 1; // where the replay ended
-        term.write(
-          STALE_MODE_RESET +
-            `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
-            "\r\n", // no divider — history flows straight into the new shell
-          () => {
-            replaying = false;
-            for (const d of pendingOutput.splice(0)) term.write(d);
-          }
-        );
-      };
-      if (term.buffer.active.type === "alternate") term.write("\x1b[?1049l", finishReset);
-      else finishReset();
+  let restoreVersion = 0;
+  let restoreTask = Promise.resolve();
+  const replay = (snapshot: TerminalSnapshot) => {
+    const version = ++restoreVersion;
+    session.restoring = true;
+    // Each connection starts with the server's complete screen. A replacement
+    // snapshot supersedes queued output from the previous connection.
+    pendingOutput.length = 0;
+    restoreTask = restoreTask.then(() => restoreTerminalSnapshot(term, snapshot, true));
+    void restoreTask.then(() => {
+      if (version !== restoreVersion || sessions.get(id) !== session) return;
+      session.restoring = false;
+      fitSession(id);
+      for (const data of pendingOutput.splice(0)) writeSessionData(id, data);
     });
-  }
-
+  };
   // Make URLs open on Cmd+click. The custom provider also joins links hard-
   // wrapped by rich CLI output, which xterm's stock addon cannot do.
   registerWebLinks(term);
@@ -1552,6 +1480,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       ? new DemoBackend(id)
       : new WebSocketBackend(WS_URL, {
           session: id,
+          restore: "1",
           cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined,
           ssh: sshTarget,
         });
@@ -1565,6 +1494,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     search,
     backend: initialBackend,
     opened: false,
+    restoring: false,
     followOutput: true,
     lockedViewportY: null,
     manualScrollUntil: 0,
@@ -1586,6 +1516,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
+    b.onRestore?.(replay);
     b.onData((data) => {
       const probeWindow = (session.defaultColorProbeTail + data).slice(-160);
       const queryMask = defaultColorQueryMask(data);
@@ -1610,7 +1541,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       // Live output only — a replayed history tail would advertise the URL of
       // a dev server that died with the previous run.
       noteSessionOutput(id, data);
-      if (replaying) {
+      if (session.restoring) {
         pendingOutput.push(data);
         return;
       }
@@ -2068,7 +1999,7 @@ export function detachSession(id: string, host: HTMLElement) {
 export function fitSession(id: string) {
   id = activeSessionId(id);
   const s = sessions.get(id);
-  if (!s || !s.opened) return;
+  if (!s || !s.opened || s.restoring) return;
   // A minimized/hidden window lays out as (near-)zero size. Fitting then
   // clamps the terminal to FitAddon's 2x1 minimum, which reflows the live
   // screen into scrollback (and mangles ConPTY's buffer) — the "current
@@ -2407,7 +2338,6 @@ export function disposeSession(id: string) {
   const presenceChanged = agentActiveSessions.delete(id);
   if (activityChanged || presenceChanged) notifyAgentActivity();
   agentSessionKinds.delete(id);
-  restoreSnapshots.delete(id);
   forgetSessionUrls(id);
   if (isDemo) return;
   // Drop its persisted restore data — a closed pane should not come back.
@@ -2440,7 +2370,6 @@ export function disposePaneSessions(paneId: string) {
       s.el.remove();
       sessions.delete(id);
     }
-    restoreSnapshots.delete(id);
     shellReadyCommands.delete(id);
     clearAgentIdleTimer(id);
     agentIdleReports.delete(id);

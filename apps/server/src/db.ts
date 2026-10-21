@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { TerminalSnapshot } from "../../../packages/core/src/backend.js";
 
 /**
  * Local store, SQLite — the same shape Wave/Warp use: the backend owns a single
@@ -26,6 +27,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS session_cwd (id TEXT PRIMARY KEY, cwd TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS session_scroll (id TEXT PRIMARY KEY, data TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS session_screen (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS session_history (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
 `);
 // updated_at orders the prune below (added after 0.1.3 shipped, so migrate).
 try {
@@ -39,6 +41,9 @@ try {
 const KEEP_SCROLL_ROWS = 40;
 db.prepare(
   "DELETE FROM session_scroll WHERE id NOT IN (SELECT id FROM session_scroll ORDER BY updated_at DESC LIMIT ?)"
+).run(KEEP_SCROLL_ROWS);
+db.prepare(
+  "DELETE FROM session_history WHERE id NOT IN (SELECT id FROM session_history ORDER BY updated_at DESC LIMIT ?)"
 ).run(KEEP_SCROLL_ROWS);
 db.prepare(
   "DELETE FROM session_screen WHERE id NOT IN (SELECT id FROM session_screen ORDER BY updated_at DESC LIMIT ?)"
@@ -233,6 +238,39 @@ export function setScreenBatch(screens: Record<string, string | null>): void {
   }
 }
 
+/** Full rendered scrollback, independent of the raw PTY replay ring. */
+export function getAllHistories(): Record<string, TerminalSnapshot> {
+  const rows = db.prepare("SELECT id, data FROM session_history").all() as { id: string; data: string }[];
+  return Object.fromEntries(rows.map(({ id, data }) => [id, JSON.parse(data)]));
+}
+
+export function getHistory(id: string): TerminalSnapshot | undefined {
+  const row = db.prepare("SELECT data FROM session_history WHERE id = ?").get(id) as { data: string } | undefined;
+  return row ? JSON.parse(row.data) : undefined;
+}
+
+export function setHistoryBatch(histories: Record<string, TerminalSnapshot>): void {
+  const entries = Object.entries(histories ?? {});
+  const now = Date.now();
+  db.exec("BEGIN");
+  try {
+    const ins = db.prepare(
+      "INSERT INTO session_history(id, data, updated_at) VALUES(?, ?, ?) " +
+      "ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at"
+    );
+    for (const [id, snapshot] of entries) {
+      if (!snapshot || typeof snapshot.data !== "string" ||
+          !Number.isInteger(snapshot.cols) || snapshot.cols < 2 || snapshot.cols > 10000 ||
+          !Number.isInteger(snapshot.rows) || snapshot.rows < 1 || snapshot.rows > 10000) continue;
+      ins.run(id, JSON.stringify(snapshot), now);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 /** Drop all restore data for sessions the user has permanently closed. */
 export function forgetSessions(ids: string[]): void {
   if (!Array.isArray(ids) || !ids.length) return;
@@ -241,10 +279,12 @@ export function forgetSessions(ids: string[]): void {
     const delCwd = db.prepare("DELETE FROM session_cwd WHERE id = ?");
     const delScroll = db.prepare("DELETE FROM session_scroll WHERE id = ?");
     const delScreen = db.prepare("DELETE FROM session_screen WHERE id = ?");
+    const delHistory = db.prepare("DELETE FROM session_history WHERE id = ?");
     for (const id of ids) {
       delCwd.run(String(id));
       delScroll.run(String(id));
       delScreen.run(String(id));
+      delHistory.run(String(id));
     }
     db.exec("COMMIT");
   } catch (e) {

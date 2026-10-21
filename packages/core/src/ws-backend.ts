@@ -1,4 +1,4 @@
-import { parseShellExit, type ClientMessage, type ITerminalBackend, type ShellExit } from "./backend.js";
+import { parseShellExit, type ClientMessage, type ITerminalBackend, type ShellExit, type TerminalSnapshot } from "./backend.js";
 
 // The bundled server boots in parallel with the webview and can lose the race
 // by a few hundred ms — retry the INITIAL connection instead of declaring the
@@ -26,6 +26,7 @@ export class WebSocketBackend implements ITerminalBackend {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private outbox: string[] = [];
   private dataCb?: (data: string) => void;
+  private restoreCb?: (snapshot: TerminalSnapshot) => void;
   private exitCb?: (reason?: string, exit?: ShellExit) => void;
 
   constructor(url: string, params?: Record<string, string | undefined>) {
@@ -40,6 +41,7 @@ export class WebSocketBackend implements ITerminalBackend {
   private connect() {
     this.attempts++;
     this.ws = new WebSocket(this.url);
+    this.ws.binaryType = "arraybuffer";
     this.ws.onopen = () => {
       this.open = true;
       this.everOpened = true;
@@ -48,6 +50,13 @@ export class WebSocketBackend implements ITerminalBackend {
     };
     this.ws.onmessage = (e) => {
       if (typeof e.data === "string") this.dataCb?.(e.data);
+      else if (e.data instanceof ArrayBuffer) {
+        // Control messages use binary frames, so shell text can never be
+        // mistaken for a restore command. ArrayBuffer decoding is synchronous
+        // to keep the snapshot ahead of the following output frames.
+        const message = JSON.parse(new TextDecoder().decode(e.data));
+        if (message.type === "restore") this.restoreCb?.(message.snapshot);
+      }
     };
     this.ws.onclose = (event) => {
       this.open = false;
@@ -70,6 +79,10 @@ export class WebSocketBackend implements ITerminalBackend {
 
   onData(cb: (data: string) => void) {
     this.dataCb = cb;
+  }
+
+  onRestore(cb: (snapshot: TerminalSnapshot) => void) {
+    this.restoreCb = cb;
   }
 
   onExit(cb: (reason?: string, exit?: ShellExit) => void) {
