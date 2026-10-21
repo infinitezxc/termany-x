@@ -1666,6 +1666,11 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       session.spawnedAt = Date.now();
       wireBackend(next);
     });
+    // Replacement PTYs start at 80x24 even when the existing xterm grid is
+    // taller. With no layout change, ResizeObserver will never send a resize.
+    // Seed every replacement connection, including detached/background panes,
+    // with the last fitted grid; WebSocketBackend queues it until open.
+    if (session.opened) b.resize(term.cols, term.rows);
   };
   wireBackend(initialBackend);
 
