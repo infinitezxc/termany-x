@@ -55,6 +55,10 @@ export function parseRemoteListeningPorts(output: string): number[] {
 /** Add a short, private OpenSSH multiplex socket to the interactive session. */
 export function sshMasterArgs(args: string[], controlPath: string): string[] {
   return [
+    // The interactive SSH process owns forwarding channels too. Its diagnostics
+    // must not be mixed into the remote application's terminal stream.
+    "-E",
+    `${controlPath}.log`,
     "-o",
     "ControlMaster=yes",
     "-o",

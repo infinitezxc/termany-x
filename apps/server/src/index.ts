@@ -417,6 +417,8 @@ interface PtySession {
   detachedAt: number | null;
   /** Null is the local login shell; otherwise the OpenSSH destination. */
   sshTarget: string | null;
+  /** Local SSH diagnostics stay out of the application's PTY output. */
+  sshLogPath?: string;
   /** In-band file transfer, wired in wireSession() as the pty is attached. */
   transfer?: TransferPipeline;
   /** Refresh activity from the live foreground job, including after reattach. */
@@ -635,6 +637,26 @@ function wireSession(id: string | undefined, session: PtySession): void {
   session.transfer = transfer;
   session.pty.onData((data) => transfer.fromShell(data));
   session.pty.onExit(({ exitCode, signal }) => {
+    if (session.sshLogPath) {
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(session.sshLogPath, "r");
+        if (exitCode !== 0) {
+          const size = fs.fstatSync(fd).size;
+          const tail = Buffer.alloc(Math.min(size, 16 * 1024));
+          const bytes = fs.readSync(fd, tail, 0, tail.length, size - tail.length);
+          const diagnostics = tail.subarray(0, bytes).toString("utf8").trim();
+          if (diagnostics) {
+            console.error(`[termany] SSH diagnostics (${id ?? session.pty.pid}): ${diagnostics}`);
+            emit(`\r\n${diagnostics.replace(/\r?\n/g, "\r\n")}\r\n`);
+          }
+        }
+      } catch { /* SSH may have exited before opening its log. */ }
+      finally {
+        if (fd !== undefined) fs.closeSync(fd);
+        try { fs.unlinkSync(session.sshLogPath); } catch { /* already absent */ }
+      }
+    }
     void session.terminal.history((snapshot) => {
       session.terminal.dispose();
       jobSampler.dispose();
@@ -2308,6 +2330,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     ws,
     detachedAt: null,
     sshTarget,
+    sshLogPath: sshControlPath ? `${sshControlPath}.log` : undefined,
   };
   if (sessionId) ptySessions.set(sessionId, session);
   else ephemeralSessions.add(session);

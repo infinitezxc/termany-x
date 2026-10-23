@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   parseRemoteListeningPorts,
@@ -37,6 +42,8 @@ test("parses listening ports from BSD netstat and ignores connected sockets", ()
 
 test("adds an explicit control master without changing the destination", () => {
   assert.deepEqual(sshMasterArgs(["-p", "2222", "dev@example.com"], "/tmp/control"), [
+    "-E",
+    "/tmp/control.log",
     "-o",
     "ControlMaster=yes",
     "-o",
@@ -70,6 +77,32 @@ test("binds forwarded ports to local loopback through the existing master", () =
     "127.0.0.1:13000:localhost:3000",
     "dev@example.com",
   ]);
+});
+
+test("real SSH writes connection diagnostics to its log instead of terminal stderr", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "termany-ssh-log-"));
+  const server = createServer((socket) => socket.destroy());
+  t.after(() => {
+    server.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const controlPath = join(directory, "control");
+  await assert.rejects(
+    promisify(execFile)("ssh", sshMasterArgs([
+      "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
+      "-p", String(address.port), "127.0.0.1",
+    ], controlPath), { timeout: 5000 }),
+    (error: unknown) => {
+      assert.equal((error as { stderr: string }).stderr, "");
+      assert.match(readFileSync(`${controlPath}.log`, "utf8"), /Connection (closed|reset)/i);
+      return true;
+    },
+  );
 });
 
 test("the PTY server exposes remote discovery and forward lifecycle APIs", () => {
