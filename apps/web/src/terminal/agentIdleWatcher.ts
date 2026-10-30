@@ -101,7 +101,13 @@ export class AgentIdleWatcher {
     const leftAgentUi = view.isAlternate
       ? false
       : this.sawAlternate || (!inputPrompt && this.sawInputPrompt);
-    if (leftAgentUi && shellPromptVisible(view.visible)) {
+    // Reattachment may start after the agent exited, so this watcher never
+    // saw its UI. A shell prompt on the live cursor row can repair that stale
+    // activity without relying on the missing transition. Keep ambiguous
+    // agent composers (❯ / >) and historical shell output out of this path.
+    const restoredShell = !view.isAlternate && !inputPrompt &&
+      shellPromptVisible(view.cursorLine) && shellPromptVisible(view.visible);
+    if ((leftAgentUi || restoredShell) && shellPromptVisible(view.visible)) {
       return { status: "done", agentActive: false };
     }
     if (inputPrompt) return { status: "done", agentActive: true };

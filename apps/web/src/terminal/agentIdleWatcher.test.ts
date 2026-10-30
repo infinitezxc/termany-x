@@ -8,6 +8,35 @@ import { AgentIdleWatcher } from "./agentIdleWatcher";
 
 const { Terminal } = xtermPkg as unknown as { Terminal: any };
 
+test("reattaching at a shell prompt clears stale agent activity without prior UI history", () => {
+  for (const prompt of ["(base) ➜  sandbox git:(main)", "user@host project %", "$ "]) {
+    const watcher = new AgentIdleWatcher();
+    watcher.update({ visible: prompt, cursorLine: prompt, isAlternate: false }, 100);
+    assert.deepEqual(watcher.pending, { status: "done", agentActive: false });
+    assert.equal(watcher.deadline, 100 + AGENT_IDLE_QUIET_MS);
+  }
+});
+
+test("shell recovery requires a live normal-screen prompt and no agent composer", () => {
+  const prompt = "(base) ➜  sandbox git:(main)";
+  const views = [
+    { visible: prompt, cursorLine: "", isAlternate: false },
+    { visible: prompt, cursorLine: prompt, isAlternate: true },
+    { visible: `${prompt}\nCompiling files`, cursorLine: "Compiling files", isAlternate: false },
+    { visible: `${prompt}\nWorking (esc to interrupt)`, cursorLine: prompt, isAlternate: false },
+  ];
+  for (const view of views) {
+    const watcher = new AgentIdleWatcher();
+    watcher.update(view, 100);
+    assert.equal(watcher.pending, null);
+  }
+  for (const composer of ["❯ ", "> "]) {
+    const watcher = new AgentIdleWatcher();
+    watcher.update({ visible: `${prompt}\n${composer}`, cursorLine: composer, isAlternate: false }, 100);
+    assert.deepEqual(watcher.pending, { status: "done", agentActive: true });
+  }
+});
+
 type Turn = {
   cols: number;
   rows: number;
