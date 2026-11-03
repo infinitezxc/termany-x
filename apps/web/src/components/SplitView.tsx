@@ -311,6 +311,7 @@ function PaneHeader({
   zen: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
 }) {
+  const { t } = useI18n();
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
@@ -352,7 +353,7 @@ function PaneHeader({
             paneId={leaf.id}
             currentTarget={leaf.sshTarget}
             currentLabel={leaf.sshLabel}
-            localLabel={/^pane \d+$/i.test(leaf.title.trim()) ? undefined : leaf.title}
+            localLabel={t("ssh.local")}
           />
         ) : editing ? (
           <input
