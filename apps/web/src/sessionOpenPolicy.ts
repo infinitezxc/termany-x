@@ -1,9 +1,12 @@
 import { getLanguage, translate } from "./i18n";
 
 export type SessionOpenMode = "switch" | "new";
-/** Sidebar creates a pane; the pane picker replaces its own view. */
-export function sessionOpenAction(mode: SessionOpenMode, hasCurrentPane: boolean) {
-  if (mode === "switch" && hasCurrentPane) return "replace";
+/**
+ * "switch" replaces the picker's pane, unless that pane is running an agent
+ * outside tmux: replacing it would end the agent, so it opens beside instead.
+ */
+export function sessionOpenAction(mode: SessionOpenMode, hasCurrentPane: boolean, currentPaneBusy = false) {
+  if (mode === "switch" && hasCurrentPane && !currentPaneBusy) return "replace";
   return "create";
 }
 

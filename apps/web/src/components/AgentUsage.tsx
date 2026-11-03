@@ -5,6 +5,7 @@ import { UsageSelect } from "./Select";
 import { useI18n } from "../i18n";
 import { focusedSshHost, useStore } from "../state/store";
 import { ChartIcon } from "./icons";
+import { tildify } from "../tildify";
 
 interface UsageRow {
   agent: string;
@@ -94,10 +95,6 @@ function localDateString(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** Collapse the home-dir prefix so project paths read short (same as AgentHistory). */
-function tildify(p: string): string {
-  return p.replace(/^\/(?:Users|home)\/[^/]+/, "~");
-}
 
 const RANGES = [
   { key: "today", labelKey: "usage.range.today" },

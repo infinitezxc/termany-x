@@ -13,6 +13,8 @@ export const sessionAgentLabel = (id: string) => SESSION_AGENTS.find(a => a.id =
 export interface RemoteSession {
   id: string; name: string; windows: number; attached: number;
   agent?: SessionAgent; conversationId?: string;
+  /** The conversation's title, first prompt and directory, when the host has its transcript. */
+  title?: string; preview?: string; cwd?: string;
 }
 export interface TmuxLaunch {
   name: string; command: string; agent: SessionAgent; conversationId?: string; cwd?: string | null;
@@ -74,6 +76,25 @@ async function request(path: string, init?: RequestInit) {
 }
 const post = (path: string, body: object) =>
   request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+/**
+ * Run a host's conversation in tmux: the session already running it, or a new
+ * one resuming it — forked where another process could share its transcript.
+ */
+export async function resumeOnHost(
+  session: string,
+  config: { id: string; command: string; args: string },
+  options: { conversationId: string; live: boolean; cwd: string | null },
+): Promise<{ name: string; conversationId?: string; created: boolean }> {
+  const running = await listRemoteSessions(session);
+  const existing = matchingTmux(running, config.id, options.conversationId);
+  if (existing) return { name: existing.name, conversationId: existing.conversationId, created: false };
+  const launch = agentLaunch(config, {
+    resume: options.conversationId, fork: resumeFork(running, config.id, options.live),
+  });
+  const name = await createRemoteSession(session, { ...launch, cwd: options.cwd });
+  return { name, conversationId: launch.conversationId, created: true };
+}
 
 export async function listRemoteSessions(session: string): Promise<RemoteSession[]> {
   return (await request(`/api/tmux?${new URLSearchParams({ session })}`)).sessions;

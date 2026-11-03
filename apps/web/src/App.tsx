@@ -6,6 +6,7 @@ import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { SearchPalette } from "./components/SearchPalette";
+import { SessionPicker } from "./components/SessionPicker";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { fetchSystemUsername } from "./userProfile";
 import { SideRail } from "./components/SideRail";
@@ -103,6 +104,9 @@ export function App() {
     setSettingsAgentId(null);
     setSettingsSection(lastSettingsSection.current);
   }, []);
+  const [sessionPicker, setSessionPicker] = useState<{ paneId?: string }>();
+  // Stable, so the open picker's effect does not rerun (and refocus) on App renders.
+  const closeSessionPicker = useCallback(() => setSessionPicker(undefined), []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -230,7 +234,7 @@ export function App() {
         lastSettingsSection.current = "appearance";
         setSettingsSection((cur) => (cur === "appearance" ? null : "appearance"));
       },
-      openAgentHistory: (s) => s.addPane("history"),
+      openAgentHistory: (s) => setSessionPicker({ paneId: activeHtab(s)?.focused }),
       openAgentUsage: (s) => s.addPane("usage"),
       openSystemMonitor: (s) => s.addPane("monitor"),
       // Consume the browser shortcut and open the command palette.
@@ -433,6 +437,7 @@ export function App() {
       {!railCollapsed && (
         <SideRail onOpenSettings={openSettings} />
       )}
+      {sessionPicker && <SessionPicker paneId={sessionPicker.paneId} onClose={closeSessionPicker} />}
       {settingsOpen && (
         <Settings
           initialSection={settingsSection ?? "appearance"}

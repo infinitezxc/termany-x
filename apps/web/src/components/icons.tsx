@@ -5,6 +5,7 @@
  */
 import {
   ChevronDown,
+  Columns2,
   ChevronLeft,
   ChevronRight,
   ChevronsDownUp,
@@ -96,6 +97,11 @@ export function SourceIcon() {
 }
 
 /** Collapse/expand the right quick-action rail — mirrors PanelIcon. */
+/** Open beside the current pane. */
+export function NewPaneIcon() {
+  return <Columns2 {...base} />;
+}
+
 export function PanelRightIcon() {
   return <PanelRight {...base} />;
 }

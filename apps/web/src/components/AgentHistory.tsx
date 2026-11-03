@@ -1,27 +1,37 @@
 import { textInputProps } from "../textInputProps";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useAgentConfigs, type AgentConfig } from "../agents";
+import { shellQuote } from "../agentCommand";
+import { useAgentConfigs, agentCommand, type AgentConfig } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
-import { activeHtab, agentSessionPanes, findLeaf, focusedCwdSession, remoteLeafFor, useStore } from "../state/store";
+import { activeHtab, findLeaf, focusedCwdSession, remoteLeafFor, useStore } from "../state/store";
 import {
   activeAgentKind,
   agentActivitySnapshot,
-  disposePaneSessions,
   paneHasShell,
   queueCommandWhenShellReady,
   subscribeAgentActivity,
   terminalSessionId,
 } from "../terminal/manager";
-import { AgentIcon, HistoryIcon } from "./icons";
+import { findSessionPane, openSessionPane, sessionPanes, showPane, showsAgent } from "../sessionNavigation";
+import type { SessionOpenMode } from "../sessionOpenPolicy";
+import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
+import { agentLaunch, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
+import { tildify } from "../tildify";
+import { HistoryIcon, NewPaneIcon } from "./icons";
+import { NewSessionButtons } from "./NewSessionButtons";
+import { RemoteSessions } from "./RemoteSessions";
+import "./SessionPicker.css";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
 interface AgentSession {
   sessionId: string;
   cwd: string | null;
+  /** The first prompt; shown under the title when the agent named the conversation. */
   preview: string;
+  title?: string;
   mtimeMs: number;
   totalTokens: number | null;
   contextTokens: number | null;
@@ -62,37 +72,7 @@ interface SessionPageState {
 
 const SESSION_PAGE_SIZE = 30;
 
-/**
- * How each supported agent resumes a session id from inside its project dir.
- * Built from the user's configured binary and launch args (Settings → Agents),
- * so a custom path or flags like claude's danger mode apply to resumed
- * sessions exactly as they do to fresh ones started from the side rail.
- *
- * `fork`: a transcript written to recently is treated as a live conversation —
- * probably still running in some terminal (maybe outside termany, where we
- * can't jump to it). Resuming a live claude session forks it instead, because
- * two claude processes appending to one transcript interleave its history.
- */
-const RESUME_COMMANDS: Record<
-  string,
-  (cfg: { command: string; args: string }, sessionId: string, fork: boolean) => string
-> = {
-  codex: (cfg, id) => [cfg.command, "resume", id, cfg.args].filter(Boolean).join(" "),
-  claude: (cfg, id, fork) =>
-    [cfg.command, "--resume", id, fork ? "--fork-session" : "", cfg.args].filter(Boolean).join(" "),
-};
-
 const ACTIVE_WINDOW_MS = 2 * 60_000;
-
-/** POSIX single-quote so an arbitrary project path survives the shell. */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Collapse the home-dir prefix so project paths read short in the list. */
-function tildify(p: string): string {
-  return p.replace(/^\/(?:Users|home)\/[^/]+/, "~");
-}
 
 /** Whether `cwd` sits at or below `root` (prefix on path segments). */
 function underRoot(cwd: string, root: string): boolean {
@@ -124,24 +104,19 @@ function formatTokens(n: number): string {
  * The list opens scoped to wherever the focused pane is: the containing repo
  * (grouped by worktree, current one first, deleted worktrees last) or, outside
  * a repo, the pane's directory. Tab flips between that scope and everything.
- * Selecting a session replaces this view with a fresh terminal, cd's to the session's own
- * project directory (resume only works from there — a deleted worktree falls
- * back to the repo root), and runs the agent's resume command.
+ * The shared selector combines remote running sessions with history. Choosing
+ * a session shows it in this view's pane; each one not open yet can also open
+ * in a new pane (⌘/Ctrl+Enter). One already open is shown where it is. Remote
+ * history resumes use tmux automatically, preserving tasks after disconnect.
  */
-export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { paneId?: string; autoFocus?: boolean }) {
+export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpened }: { paneId?: string; autoFocus?: boolean; onOpened?: () => void }) {
   const { t } = useI18n();
   const ime = useImeGuard();
   const addPane = useStore((s) => s.addPane);
-  const jumpToResult = useStore((s) => s.jumpToResult);
-  const setPaneAgentSession = useStore((s) => s.setPaneAgentSession);
-  const setPaneSshTarget = useStore((s) => s.setPaneSshTarget);
-  const setPaneView = useStore((s) => s.setPaneView);
-  const closePane = useStore((s) => s.closePane);
-  const renamePane = useStore((s) => s.renamePane);
   const workspaces = useStore((s) => s.workspaces);
   const agentConfigs = useAgentConfigs();
-  const agents = Object.keys(RESUME_COMMANDS)
-    .map((id) => agentConfigs.find((agent) => agent.id === id && agent.enabled))
+  const agents = SESSION_AGENTS
+    .map(({ id }) => agentConfigs.find((agent) => agent.id === id && agent.enabled))
     .filter((agent): agent is AgentConfig => agent !== undefined);
   const [selectedAgentId, setAgentId] = useState("codex");
   const agentId = agents.find((agent) => agent.id === selectedAgentId)?.id ?? agents[0]?.id ?? "codex";
@@ -173,13 +148,15 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
     return leaf?.sshTarget
       ? {
           gitSession: terminalSessionId(leaf.id, leaf.sshTarget),
-          ssh: { target: leaf.sshTarget, label: leaf.sshLabel, session: terminalSessionId(leaf.id, leaf.sshTarget) },
+          ssh: { paneId: leaf.id, target: leaf.sshTarget, label: leaf.sshLabel, session: terminalSessionId(leaf.id, leaf.sshTarget) },
         }
       : { gitSession: id, ssh: undefined };
   });
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const resuming = useRef(false);
+  // Resumes, opens and the running list's own actions share one busy state and error.
+  const action = useSessionAction();
+  const remote = useRemoteSessions(ssh?.session);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -314,11 +291,13 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
   const { rows, groups } = useMemo((): { rows: AgentSession[]; groups: Group[] | null } => {
     if (!sessions) return { rows: [], groups: null };
     const q = query.trim().toLowerCase();
+    // A conversation running in tmux is listed with the running sessions instead.
+    const historical = sessions.filter(s => !matchingTmux(remote.sessions, agentId, s.sessionId));
     const filtered = q
-      ? sessions.filter(
-          (s) => s.preview.toLowerCase().includes(q) || (s.cwd ?? "").toLowerCase().includes(q)
+      ? historical.filter(
+          (s) => `${s.title ?? ""} ${s.preview} ${s.cwd ?? ""}`.toLowerCase().includes(q)
         )
-      : sessions;
+      : historical;
     if (scope !== "scoped" || scopeInfo?.kind !== "repo") return { rows: filtered, groups: null };
 
     const byLen = [...scopeInfo.worktrees].sort((a, b) => b.path.length - a.path.length);
@@ -344,7 +323,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
     }
     if (gone.length) groups.push({ key: "|gone", label: t("history.group.deleted"), path: null, sessions: gone });
     return { rows: groups.flatMap((g) => g.sessions), groups };
-  }, [sessions, query, scope, scopeInfo, t]);
+  }, [sessions, query, scope, scopeInfo, t, remote.sessions, agentId]);
 
   useEffect(() => setSelected(0), [rows]);
 
@@ -358,7 +337,17 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
   // tag outlives the conversation — the agent may have exited, or the pane
   // moved on to another agent — so only a pane whose terminal is still inside
   // that agent counts; otherwise the row resumes normally.
-  const taggedPanes = useMemo(() => agentSessionPanes(workspaces), [workspaces]);
+  // Only panes on this history's host: the same conversation ID elsewhere is a
+  // different transcript.
+  const taggedPanes = useMemo(
+    () =>
+      new Map(
+        sessionPanes(workspaces)
+          .filter(({ leaf }) => leaf.sshTarget === ssh?.target && leaf.agentSession)
+          .map(({ leaf, location }) => [`${leaf.agentSession!.agent}|${leaf.agentSession!.sessionId}`, location]),
+      ),
+    [workspaces, ssh],
+  );
   const taggedIds = useMemo(() => [...taggedPanes.values()].map((loc) => loc.paneId), [taggedPanes]);
   const activity = useSyncExternalStore(
     subscribeAgentActivity,
@@ -374,76 +363,55 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
     [taggedPanes, activity],
   );
 
-  /** The history pane, when this view is one and sits in the active tab. */
-  const historyLeaf = () => {
-    const htab = historyPaneId ? activeHtab(useStore.getState()) : undefined;
-    return htab && historyPaneId ? findLeaf(htab.layout, historyPaneId) : undefined;
-  };
-
-  /**
-   * Replace the history pane in place, including when it has a cached local
-   * or SSH shell. Wait for server teardown before reusing the session id.
-   */
-  const conversationPane = async (): Promise<string | null> => {
-    const leaf = historyLeaf();
-    if (leaf) {
-      if (!await disposePaneSessions(leaf.id)) {
-        setError(true);
-        return null;
-      }
-      // The user may have closed or switched away from history while waiting.
-      if (historyLeaf()?.view !== "history") return null;
-      setPaneView(leaf.id, "terminal");
-      renamePane(leaf.id, agentId);
-      return leaf.id;
-    }
-    return addPane("terminal", agentId);
-  };
-
-  const resume = async (s: AgentSession) => {
-    if (resuming.current) return;
-    // Already open in a pane → go there instead of resuming a second copy.
+  const resume = (s: AgentSession, mode: SessionOpenMode = "switch") => action.run(async () => {
     const loc = openPanes.get(`${agentId}|${s.sessionId}`);
     if (loc) {
-      // Nothing to run here, so the history just goes away.
-      const leaf = historyLeaf();
-      if (leaf && !leaf.sshTarget && !paneHasShell(leaf.id)) closePane(leaf.id);
-      else if (leaf) setPaneView(leaf.id, "terminal");
-      jumpToResult(loc);
+      showPane(loc);
+      onOpened?.();
       return;
     }
-    const resumeCommand = RESUME_COMMANDS[agentId];
     const cfg = agents.find((a) => a.id === agentId);
-    if (!resumeCommand || !cfg) return;
-    const isLive = Date.now() - s.mtimeMs < ACTIVE_WINDOW_MS;
-    const run = resumeCommand(
-      { command: cfg.command.trim() || agentId, args: cfg.args.trim() },
-      s.sessionId,
-      isLive
-    );
+    if (!cfg) return;
+    const live = Date.now() - s.mtimeMs < ACTIVE_WINDOW_MS;
+    const title = s.title || s.preview;
     // A deleted worktree can't be cd'd into; in scope the repo root is the
     // next-best home for that conversation. Outside a scope we can't tell
     // which repo it belonged to, so just resume from wherever the shell lands.
     const cwd = s.cwdMissing ? (scope === "scoped" ? scopeInfo?.mainRoot ?? null : null) : s.cwd;
-    resuming.current = true;
-    try {
-      const paneId = await conversationPane();
-      if (paneId) {
-        const command = cwd ? `cd ${shellQuote(cwd)} && ${run}` : run;
-        if (ssh) {
-          // Resume on the host the transcript lives on. The connection may still
-          // be authenticating, so wait for the remote prompt before typing.
-          setPaneSshTarget(paneId, ssh.target, ssh.label);
-          queueCommandWhenShellReady(terminalSessionId(paneId, ssh.target), command);
-        } else {
-          queueCommandWhenShellReady(paneId, command);
-        }
-        setPaneAgentSession(paneId, { agent: agentId, sessionId: s.sessionId });
-      }
-    } finally {
-      resuming.current = false;
+    if (ssh) {
+      // Remote conversations run in tmux so they survive a dropped link.
+      const run = await resumeOnHost(ssh.session, cfg, { conversationId: s.sessionId, live, cwd });
+      if (run.created) await remote.reload();
+      await openSessionPane({
+        mode, sourcePaneId: historyPaneId,
+        destination: {
+          title: title || run.name, sshTarget: ssh.target, sshLabel: ssh.label, tmuxSession: run.name,
+          agentSession: run.conversationId ? { agent: agentId, sessionId: run.conversationId } : undefined,
+        },
+      });
+    } else {
+      const launch = agentLaunch(cfg, { resume: s.sessionId, fork: live });
+      const paneId = await openSessionPane({
+        mode, sourcePaneId: historyPaneId,
+        destination: {
+          title: title || agentId,
+          agentSession: launch.conversationId ? { agent: agentId, sessionId: launch.conversationId } : undefined,
+        },
+      });
+      queueCommandWhenShellReady(paneId, cwd ? `cd ${shellQuote(cwd)} && ${launch.command}` : launch.command);
     }
-  };
+    onOpened?.();
+  });
+
+  /** Runs in the picker's shell, or in a new pane beside a running agent. */
+  const startLocal = (agent: AgentConfig) => action.run(async () => {
+    const source = findSessionPane(historyPaneId);
+    const inPlace = !!source && (source.view ?? "terminal") === "terminal" && !source.sshTarget && !showsAgent(source.id);
+    const id = inPlace ? source.id : addPane("terminal", agent.name, historyPaneId);
+    if (!id) throw new Error(t("tmux.noRoom"));
+    queueCommandWhenShellReady(id, agentCommand(agent));
+    onOpened?.();
+  });
 
   const switchAgent = (id: string) => {
     setAgentId(id);
@@ -468,35 +436,48 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
       s.cwd && !inWorktreeGroup ? tildify(s.cwd) : null,
     ].filter(Boolean);
     return (
-      <button
-        key={s.sessionId}
-        data-idx={idx}
-        className={`search-row pane ${idx === selected ? "active" : ""}`}
-        onMouseEnter={() => setSelected(idx)}
-        onClick={() => resume(s)}
-      >
-        <span className="search-row-main">
-          <span className="search-row-label">{s.preview || t("history.emptySession")}</span>
-          <span className={`search-row-breadcrumb ${s.cwdMissing ? "history-gone" : ""}`}>
-            {meta.join(" · ")}
+      <div className="session-row" key={s.sessionId}>
+        <button
+          data-idx={idx}
+          className={`search-row pane ${idx === selected ? "active" : ""}`}
+          onMouseEnter={() => setSelected(idx)}
+          onClick={() => resume(s)}
+        >
+          <span className="search-row-main">
+            <span className="search-row-label">{s.title || s.preview || t("history.emptySession")}</span>
+            {s.title && s.preview && <span className="search-row-breadcrumb">{s.preview}</span>}
+            <span className={`search-row-breadcrumb ${s.cwdMissing ? "history-gone" : ""}`}>
+              {meta.join(" · ")}
+            </span>
           </span>
-        </span>
-        {isOpen && (
-          <span className="history-badge open" title={t("history.badge.openTitle")}>
-            {t("history.badge.open")}
-          </span>
+          {isOpen && (
+            <span className="history-badge open" title={t("history.badge.openTitle")}>
+              {t("history.badge.open")}
+            </span>
+          )}
+          {isLive && (
+            <span className="history-badge live" title={t("history.badge.activeTitle")}>
+              {t("history.badge.active")}
+            </span>
+          )}
+          {s.cwdMissing && (
+            <span className="history-badge stale" title={t("history.badge.staleTitle")}>
+              {t("history.badge.stale")}
+            </span>
+          )}
+        </button>
+        {!isOpen && (
+          <button
+            className="session-icon-btn session-row-action"
+            title={t("sessions.openNewPane")}
+            aria-label={t("sessions.openNewPane")}
+            onMouseEnter={() => setSelected(idx)}
+            onClick={() => resume(s, "new")}
+          >
+            <NewPaneIcon />
+          </button>
         )}
-        {isLive && (
-          <span className="history-badge live" title={t("history.badge.activeTitle")}>
-            {t("history.badge.active")}
-          </span>
-        )}
-        {s.cwdMissing && (
-          <span className="history-badge stale" title={t("history.badge.staleTitle")}>
-            {t("history.badge.stale")}
-          </span>
-        )}
-      </button>
+      </div>
     );
   };
 
@@ -532,7 +513,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
               } else if (e.key === "Enter") {
                 e.preventDefault();
                 const row = rows[selected];
-                if (row) resume(row);
+                if (row) resume(row, e.metaKey || e.ctrlKey ? "new" : "switch");
               }
             }}
           />
@@ -550,22 +531,33 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false }: { pan
             </div>
           )}
         </div>
+        {action.error && <div role="alert" className="session-error">{action.error}</div>}
+
+        {ssh ? (
+          <RemoteSessions
+            host={ssh}
+            sourcePaneId={historyPaneId ?? ssh.paneId}
+            remote={remote}
+            action={action}
+            query={query}
+            onOpened={onOpened}
+          />
+        ) : (
+          <div className="session-section-head">
+            <span className="session-section-label">{t("sessions.new")}</span>
+            <NewSessionButtons agents={agentConfigs} busy={action.busy} onCreate={(agent) => void startLocal(agent)} />
+          </div>
+        )}
 
         <div className="history-tabs">
+          <span className="session-section-label">{t("sessions.history")}</span>
           {agents.map((a) => (
             <button
               key={a.id}
               className={`history-tab ${a.id === agentId ? "active" : ""}`}
               onClick={() => switchAgent(a.id)}
             >
-              {a.icon ? (
-                <img className="history-tab-icon" src={a.icon} alt="" aria-hidden="true" />
-              ) : (
-                <span className="history-tab-icon fallback">
-                  <AgentIcon />
-                </span>
-              )}
-              <span>{a.id === "claude" ? "Claude Code" : a.name}</span>
+              <span>{sessionAgentLabel(a.id)}</span>
             </button>
           ))}
         </div>

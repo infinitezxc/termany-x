@@ -137,7 +137,7 @@ const ACTION_DEFINITIONS: ActionDef[] = [
   { id: "findPrev", label: "Find previous", group: "General", default: { code: "KeyG", meta: true, shift: true } },
   // The three side-rail panels. ⌘⇧H is free — macOS only claims ⌘H (hide) and
   // ⌥⌘H (hide others), both of which stay with the native menu.
-  { id: "openAgentHistory", label: "Open agent session history", group: "General", default: { code: "KeyH", meta: true, shift: true } },
+  { id: "openAgentHistory", label: "Open sessions", group: "General", default: { code: "KeyH", meta: true, shift: true } },
   { id: "openAgentUsage", label: "Open agent token usage", group: "General", default: { code: "KeyU", meta: true, shift: true } },
   { id: "openSystemMonitor", label: "Open system monitor", group: "General", default: { code: "KeyM", meta: true, shift: true } },
 ];

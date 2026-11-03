@@ -7,6 +7,8 @@ test("sidebar creates a pane while the title picker replaces its current pane", 
   assert.equal(sessionOpenAction("new", false), "create");
   assert.equal(sessionOpenAction("switch", true), "replace");
   assert.equal(sessionOpenAction("switch", false), "create");
+  // A pane running an agent outside tmux keeps it; the session opens beside.
+  assert.equal(sessionOpenAction("switch", true, true), "create");
 });
 
 test("switch commits only after teardown acknowledgement", async () => {

@@ -1,12 +1,29 @@
 // Chinese (Simplified) — 简体中文
 
 export default {
+  "sessions.title": "会话",
+  "sessions.running": "正在运行",
+  "sessions.history": "历史对话",
+  "sessions.new": "新建会话",
+  "sessions.openNewPane": "在新窗格中打开",
+  "sessions.switch": "切换会话",
+  "sessions.newAgent": "新建 {agent} 会话",
+
   "sessions.error.sourceClosed": "来源 pane 已关闭。",
   "sessions.error.paneChanged": "切换会话时 pane 发生了变化，请重试。",
   "sessions.error.release": "无法释放当前终端连接。",
   "sessions.error.unsupportedAgent": "该 agent 无法作为会话运行。",
+  "sessions.error.noAgent": "尚未配置 {agent}。",
   "sessions.error.invalidId": "无效的对话 ID。",
   "sessions.error.unlinked": "有一个正在运行的 {agent} 会话尚未关联到对话，而此对话在最近几分钟内仍有活动。请从“正在运行”中打开它，或在它启动后刷新。",
+
+  "tmux.refresh": "刷新",
+  "tmux.windows": "{n} 个窗口",
+  "tmux.attachedBadge": "已连接",
+  "tmux.agentSession": "{agent} 会话",
+  "tmux.end": "结束会话",
+  "tmux.endAttached": "请先断开此会话的所有终端，再结束它。",
+  "tmux.empty": "此主机上没有正在运行的会话。",
   "tmux.noRoom": "当前标签页无法再添加 pane，远端会话已保留。",
 
   "settings.title": "设置",
@@ -21,7 +38,7 @@ export default {
   "settings.language.title": "语言",
   "settings.language.label": "界面语言",
   "settings.rail.title": "右侧工具栏",
-  "settings.rail.description": "选择在右侧工具栏和窗格菜单中显示的快捷操作。",
+  "settings.rail.description": "选择在右侧工具栏和窗格菜单中显示的快捷操作。历史记录仅出现在窗格菜单中，可从窗格标题栏打开会话选择器。",
   "settings.rail.note": "设置按钮会始终保留。",
 
   "common.cancel": "取消",
@@ -277,7 +294,7 @@ export default {
   "pane.view.files": "文件",
   "pane.view.git": "Git 差异",
   "pane.view.monitor": "活动监视器",
-  "pane.view.history": "会话历史",
+  "pane.view.history": "会话",
   "pane.view.usage": "智能体用量",
   "pane.view.providers": "模型网关",
   "pane.openInBrowser": "在浏览器中打开 {url}",
@@ -366,7 +383,7 @@ export default {
   "kb.action.findNext": "查找下一个",
   "kb.action.findPrev": "查找上一个",
   "kb.action.openThemePicker": "打开主题面板",
-  "kb.action.openAgentHistory": "打开智能体会话历史",
+  "kb.action.openAgentHistory": "打开会话",
   "kb.action.openAgentUsage": "打开智能体用量统计",
   "kb.action.openSystemMonitor": "打开系统监视器",
 
@@ -490,7 +507,7 @@ export default {
   "action.findNext": "查找下一个",
   "action.findPrev": "查找上一个",
   "action.openThemePicker": "打开主题面板",
-  "action.openAgentHistory": "打开智能体会话历史",
+  "action.openAgentHistory": "打开会话",
   "action.openAgentUsage": "打开智能体用量统计",
   "action.openSystemMonitor": "打开系统监视器",
 
