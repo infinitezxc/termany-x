@@ -1,6 +1,14 @@
 // English (source locale — every other dictionary falls back to this one)
 
 export default {
+  "sessions.error.sourceClosed": "The source pane has been closed.",
+  "sessions.error.paneChanged": "The pane changed while switching sessions. Please try again.",
+  "sessions.error.release": "Could not release the current terminal connection.",
+  "sessions.error.unsupportedAgent": "This agent cannot run as a session.",
+  "sessions.error.invalidId": "Invalid conversation ID.",
+  "sessions.error.unlinked": "A running {agent} session is not linked to a conversation yet, and this conversation was active in the last few minutes. Open it from Running sessions, or refresh once it has started.",
+  "tmux.noRoom": "This tab has no room for another pane. The remote session is preserved.",
+
   "settings.title": "Settings",
   "settings.profile": "Profile",
   "profile.nickname": "Nickname",

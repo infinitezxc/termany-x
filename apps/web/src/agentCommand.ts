@@ -1,3 +1,8 @@
+/** POSIX single-quote so an arbitrary value survives the shell as one word. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export function buildAgentCommand(command: string, args: string): string {
   return [command.trim(), args.trim()].filter(Boolean).join(" ");
 }

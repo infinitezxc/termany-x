@@ -1,6 +1,14 @@
 // Chinese (Simplified) — 简体中文
 
 export default {
+  "sessions.error.sourceClosed": "来源 pane 已关闭。",
+  "sessions.error.paneChanged": "切换会话时 pane 发生了变化，请重试。",
+  "sessions.error.release": "无法释放当前终端连接。",
+  "sessions.error.unsupportedAgent": "该 agent 无法作为会话运行。",
+  "sessions.error.invalidId": "无效的对话 ID。",
+  "sessions.error.unlinked": "有一个正在运行的 {agent} 会话尚未关联到对话，而此对话在最近几分钟内仍有活动。请从“正在运行”中打开它，或在它启动后刷新。",
+  "tmux.noRoom": "当前标签页无法再添加 pane，远端会话已保留。",
+
   "settings.title": "设置",
   "settings.profile": "个人资料",
   "profile.nickname": "昵称",

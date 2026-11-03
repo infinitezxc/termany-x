@@ -73,6 +73,8 @@ export type Pane =
        *  the local login shell. Kept in layout state so relaunch reconnects to
        *  the same host. */
       sshTarget?: string;
+      terminalRevision?: number;
+      tmuxSession?: string;
       /** Human-readable profile name shown in the terminal header. */
       sshLabel?: string;
       /** Which agent CLI conversation this pane hosts, registered when the
@@ -271,6 +273,7 @@ interface State {
   nextPane: () => void;
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
+  replacePaneSession: (leafId: string, destination: { title: string; sshTarget?: string; sshLabel?: string; tmuxSession?: string; agentSession?: { agent: string; sessionId: string } }) => void;
   setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
@@ -286,7 +289,7 @@ interface State {
     view: PaneView,
     title?: string,
     cwdFrom?: string,
-    opts?: { inheritSsh?: boolean },
+    opts?: { inheritSsh?: boolean; tmuxSession?: string; sshTarget?: string; sshLabel?: string },
   ) => string | null;
   /** Show the pane's cached local shell or an OpenSSH destination. */
   setPaneSshTarget: (leafId: string, target?: string, label?: string) => void;
@@ -1463,6 +1466,15 @@ export const useStore = create<State>((set, get) => ({
       })),
     })),
 
+  replacePaneSession: (leafId, destination) => set((s) => ({
+    workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+      ...leaf, view: "terminal", title: destination.title,
+      sshTarget: destination.sshTarget, sshLabel: destination.sshLabel,
+      tmuxSession: destination.tmuxSession,
+      agentSession: destination.agentSession, terminalRevision: (leaf.terminalRevision ?? 0) + 1,
+    })),
+  })),
+
   setPaneAgentSession: (leafId, info) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1590,7 +1602,9 @@ export const useStore = create<State>((set, get) => ({
             const leaf = {
               ...makeLeaf(title ?? nextPaneTitle(h.layout), source),
               view,
+              tmuxSession: opts?.tmuxSession,
               ...(view === "terminal" && opts?.inheritSsh ? inheritedSsh(s, source) : undefined),
+              ...(opts?.sshTarget ? { sshTarget: opts.sshTarget, sshLabel: opts.sshLabel } : undefined),
             };
             created = leaf.id;
             const next = {
@@ -1612,6 +1626,7 @@ export const useStore = create<State>((set, get) => ({
       workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
         ...leaf,
         view: "terminal",
+        tmuxSession: leaf.sshTarget === destination ? leaf.tmuxSession : undefined,
         sshTarget: destination,
         sshLabel: destination ? label?.trim() || destination : undefined,
       })),

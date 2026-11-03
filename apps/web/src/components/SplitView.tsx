@@ -489,7 +489,7 @@ function PaneSlot({
         ) : leaf.view === "providers" ? (
           <ProviderPane />
         ) : (
-          <TerminalPane id={leaf.id} sshTarget={leaf.sshTarget} />
+          <TerminalPane key={leaf.terminalRevision ?? 0} id={leaf.id} sshTarget={leaf.sshTarget} tmuxSession={leaf.tmuxSession} />
         )}
         {dropEdge && <div className={`drop-ind drop-ind-${dropEdge}`} />}
       </div>
