@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { spawn as spawnPty } from "node-pty";
 import { execFileSync, spawn } from "node:child_process";
-import { listRemoteAgentSessions } from "./agentSessions.js";
+import { listRemoteAgentSessions, remoteAgentSessionsById } from "./agentSessions.js";
 import { gitDiffs, gitOverview, withGitHost } from "./git.js";
 import {
   parseRemoteListing,
@@ -250,6 +250,13 @@ test(
         ].join("\n") + "\n",
       );
     transcript("11111111-1111-1111-1111-111111111111", project, "hello remote");
+    // Claude's current title sits after the head, near the end of the file.
+    writeFileSync(
+      path.join(dir, "11111111-1111-1111-1111-111111111111.jsonl"),
+      Array.from({ length: 60 }, () => JSON.stringify({ type: "assistant", message: { content: "ok" } })).join("\n") +
+        "\n" + JSON.stringify({ type: "ai-title", aiTitle: "Remote greeting" }) + "\n",
+      { flag: "a" },
+    );
     transcript("22222222-2222-2222-2222-222222222222", path.join(root, "gone"), "deleted worktree");
     writeFileSync(path.join(dir, "agent-sub.jsonl"), "{}\n");
 
@@ -266,6 +273,16 @@ test(
 
     const scoped = await listRemoteAgentSessions(exec, "host-a", "claude", [project], 0, 1);
     assert.deepEqual(scoped.sessions?.map((s) => s.preview), ["hello remote"]);
+
+    // A running tmux session looks up just its own conversation, by ID.
+    const byId = await remoteAgentSessionsById(exec, "host-a", "claude", [
+      "11111111-1111-1111-1111-111111111111",
+      "33333333-3333-3333-3333-333333333333",
+    ]);
+    assert.deepEqual(
+      [...byId].map(([id, s]) => [id, s.title, s.preview]),
+      [["11111111-1111-1111-1111-111111111111", "Remote greeting", "hello remote"]],
+    );
 
     // No transcripts at all on the host is an empty list, not an error.
     assert.deepEqual(await listRemoteAgentSessions(exec, "host-a", "codex"), { sessions: [], nextCursor: null });
@@ -284,8 +301,12 @@ test(
         userText("fix the login bug"),
       ].join("\n") + "\n",
     );
+    writeFileSync(
+      path.join(root, ".codex", "session_index.jsonl"),
+      JSON.stringify({ id: "abc", thread_name: "fix the login" }) + "\n" + JSON.stringify({ id: "abc", thread_name: "Login bug fix" }) + "\n",
+    );
     const codex = await listRemoteAgentSessions(exec, "host-a", "codex");
-    assert.deepEqual(codex.sessions?.map((s) => [s.sessionId, s.preview]), [["abc", "fix the login bug"]]);
+    assert.deepEqual(codex.sessions?.map((s) => [s.sessionId, s.title, s.preview]), [["abc", "Login bug fix", "fix the login bug"]]);
   }),
 );
 

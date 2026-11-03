@@ -130,3 +130,56 @@ test("remote usage matches the local reader on the same transcripts", async () =
     await fs.promises.rm(home, { recursive: true, force: true });
   }
 });
+
+test("session history shows each agent's own title above the first prompt", async () => {
+  const originalHome = process.env.HOME;
+  const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "termany-agent-titles-"));
+  try {
+    process.env.HOME = home;
+    // Claude appends its AI title again every few turns; the last one is current.
+    const claudeDir = path.join(home, ".claude", "projects", "-proj");
+    await fs.promises.mkdir(claudeDir, { recursive: true });
+    const aiTitle = (aiTitle: string) => JSON.stringify({ type: "ai-title", aiTitle, sessionId: "x" });
+    const filler = Array.from({ length: 60 }, () => JSON.stringify({ type: "assistant", message: { content: "ok" } }));
+    await fs.promises.writeFile(
+      path.join(claudeDir, "11111111-1111-1111-1111-111111111111.jsonl"),
+      [
+        JSON.stringify({ type: "user", cwd: home, message: { content: "fix the flaky login test" } }),
+        aiTitle("Login test"),
+        ...filler,
+        aiTitle("Fix flaky login test"),
+      ].join("\n") + "\n",
+    );
+    const claude = await listAgentSessions("claude");
+    assert.deepEqual(claude.sessions?.map((s) => [s.title, s.preview]), [["Fix flaky login test", "fix the flaky login test"]]);
+
+    // Codex names threads in an index: first after the prompt cut short, then properly.
+    const codexDir = path.join(home, ".codex", "sessions", "2026", "08", "03");
+    await fs.promises.mkdir(codexDir, { recursive: true });
+    for (const [id, prompt] of [["named", "why does the build fail on arm64"], ["unnamed", "check disk"]]) {
+      await fs.promises.writeFile(
+        path.join(codexDir, `rollout-${id}.jsonl`),
+        [
+          JSON.stringify({ type: "session_meta", payload: { id, cwd: home } }),
+          JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: prompt } }),
+        ].join("\n"),
+      );
+    }
+    await fs.promises.writeFile(
+      path.join(home, ".codex", "session_index.jsonl"),
+      [
+        { id: "named", thread_name: "why does the build fa" },
+        { id: "unnamed", thread_name: "check disk" },
+        { id: "named", thread_name: "Diagnose arm64 build" },
+      ].map((e) => JSON.stringify(e)).join("\n") + "\n",
+    );
+    const codex = await listAgentSessions("codex");
+    assert.deepEqual(
+      codex.sessions?.map((s) => [s.sessionId, s.title]).sort(),
+      [["named", "Diagnose arm64 build"], ["unnamed", undefined]],
+    );
+  } finally {
+    process.env.HOME = originalHome;
+    await fs.promises.rm(home, { recursive: true, force: true });
+  }
+});

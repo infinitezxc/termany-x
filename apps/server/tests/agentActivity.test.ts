@@ -267,3 +267,21 @@ test("server wires the shared tracker through PTY input, output, and APIs", () =
   assert.match(server, /\/api\/activity\/ack/);
   assert.match(server, /\/api\/activity\/report/);
 });
+
+test("an agent attached through tmux owns the pane before any input", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.attachAgent("pane-tmux", "claude");
+  assert.deepEqual(tracker.activeSessionIds(), ["pane-tmux"]);
+  assert.equal(tracker.snapshot()["pane-tmux"]?.status, "working");
+
+  // The screen holding still settles it green, and the agent keeps the pane.
+  assert.equal(tracker.reportIdle("pane-tmux", 1, true), true);
+  assert.equal(tracker.snapshot()["pane-tmux"]?.status, "done");
+  assert.deepEqual(tracker.activeSessionIds(), ["pane-tmux"]);
+
+  // A prompt sent to it is a new task; attaching again changes nothing.
+  tracker.noteInput("pane-tmux", "fix the build\r");
+  assert.deepEqual(tracker.snapshot()["pane-tmux"], { ...tracker.snapshot()["pane-tmux"], status: "working", taskEpoch: 2 });
+  tracker.attachAgent("pane-tmux", "claude");
+  assert.equal(tracker.snapshot()["pane-tmux"]?.taskEpoch, 2);
+});
