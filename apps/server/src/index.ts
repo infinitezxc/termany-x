@@ -18,7 +18,8 @@ import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { REMOTE_FOREGROUND_SCRIPT, RemoteShellIdentity, remoteForegroundIsShell } from "./remoteForeground.js";
-import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage } from "./agentSessions.js";
+import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage, deleteAgentSession, deleteRemoteAgentSession } from "./agentSessions.js";
+import { UUID } from "./uuid.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, killRemoteProcess, readRemoteSystemStats, readSystemStats } from "./systemStats.js";
@@ -1640,6 +1641,25 @@ const http = createServer((req, res) => {
   // Repeated `root` params scope the list to sessions under those directories
   // (the browser passes the current repo's worktree roots); `cursor` + `limit`
   // page through newest-first transcript headers without full-file token scans.
+  if (req.method === "POST" && reqUrl.pathname === "/api/agent-sessions/delete") {
+    readJson(req)
+      .then(async (body) => {
+        const agent = String(body?.agent ?? "");
+        const sessionId = String(body?.sessionId ?? "");
+        if (!UUID.test(sessionId)) throw new Error("Invalid session ID");
+        // An SSH pane's history is its host's, so that is where it is deleted.
+        const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
+        if (remote) {
+          await deleteRemoteAgentSession((script, args) => remoteSh(remote.args, script, args), remote.target, agent, sessionId);
+        } else {
+          await deleteAgentSession(agent, sessionId);
+        }
+        json(200, { ok: true });
+      })
+      .catch((error) => json(400, { error: error instanceof Error ? error.message : String(error) }));
+    return;
+  }
+
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-sessions") {
     (async () => {
       const agent = reqUrl.searchParams.get("agent") ?? "claude";

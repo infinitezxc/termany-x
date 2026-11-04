@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawn as spawnPty } from "node-pty";
 import { execFileSync, spawn } from "node:child_process";
-import { listRemoteAgentSessions, remoteAgentSessionsById } from "./agentSessions.js";
+import { deleteRemoteAgentSession, listRemoteAgentSessions, remoteAgentSessionsById } from "./agentSessions.js";
 import { gitDiffs, gitOverview, withGitHost } from "./git.js";
 import {
   parseRemoteListing,
@@ -305,6 +305,19 @@ test(
       path.join(root, ".codex", "session_index.jsonl"),
       JSON.stringify({ id: "abc", thread_name: "fix the login" }) + "\n" + JSON.stringify({ id: "abc", thread_name: "Login bug fix" }) + "\n",
     );
+    // Deleting goes through the same listing, on the host.
+    const goneId = "22222222-2222-2222-2222-222222222222";
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(path.join(dir, `${goneId}.jsonl`), old, old);
+    mkdirSync(path.join(dir, goneId));
+    await deleteRemoteAgentSession(exec, "host-a", "claude", goneId);
+    assert.equal(existsSync(path.join(dir, `${goneId}.jsonl`)), false);
+    assert.equal(existsSync(path.join(dir, goneId)), false);
+    assert.deepEqual(
+      (await listRemoteAgentSessions(exec, "host-a", "claude")).sessions?.map((s) => s.sessionId),
+      ["11111111-1111-1111-1111-111111111111"],
+    );
+
     const codex = await listRemoteAgentSessions(exec, "host-a", "codex");
     assert.deepEqual(codex.sessions?.map((s) => [s.sessionId, s.title, s.preview]), [["abc", "Login bug fix", "fix the login bug"]]);
   }),

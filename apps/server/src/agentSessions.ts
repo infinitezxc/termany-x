@@ -1078,6 +1078,56 @@ export async function remoteAgentSessionsById(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// deleting a conversation
+//
+// The transcript is found by ID in the same listing the history reads, never
+// from a path the client sends, and one written to recently is refused: it
+// may belong to an agent still running, in a pane or anywhere else. Claude
+// keeps a conversation's tool output and subagents in a folder named like its
+// transcript, which goes with it; the agents' own housekeeping elsewhere
+// (Claude's file history, Codex's thread index) is left to them.
+
+/** Written to within this long, a conversation may still be running. */
+const DELETE_QUIET_MS = 2 * 60_000;
+
+function deletable(agent: string, sessionId: string, files: { abs: string; mtimeMs: number }[]) {
+  if (!REMOTE_SOURCES[agent]) throw new Error("This agent's sessions cannot be deleted");
+  const id = sessionId.toLowerCase();
+  const matches = files.filter((f) => TRANSCRIPT_ID.exec(f.abs)?.[1].toLowerCase() === id);
+  if (!matches.length) throw new Error("Session not found");
+  if (matches.some((f) => Date.now() - f.mtimeMs < DELETE_QUIET_MS)) {
+    throw new Error("This session was active in the last 2 minutes and may still be running");
+  }
+  // Claude's sibling folder is `<id>/` beside `<id>.jsonl`; Codex has none.
+  return matches.map((f) => ({ abs: f.abs, dir: agent === "claude" ? f.abs.slice(0, -".jsonl".length) : null }));
+}
+
+/** Delete one of this machine's conversations, by ID. */
+export async function deleteAgentSession(agent: string, sessionId: string): Promise<void> {
+  const files = await listAgentFileEntries(agent);
+  const targets = deletable(agent, sessionId, files.map((f) => ({ abs: f.abs, mtimeMs: f.st.mtimeMs })));
+  for (const { abs, dir } of targets) {
+    await fs.promises.rm(abs, { force: true });
+    if (dir) await fs.promises.rm(dir, { recursive: true, force: true });
+    sessionCache.delete(abs);
+    fullCache.delete(abs);
+  }
+}
+
+/** $1 = transcript, $2 = its folder (or empty). */
+const REMOTE_DELETE_SCRIPT = 'rm -f -- "$1" || exit 1; if [ -n "$2" ]; then rm -rf -- "$2" || exit 1; fi';
+
+/** Delete one of an SSH host's conversations, by ID. */
+export async function deleteRemoteAgentSession(exec: RemoteExec, hostKey: string, agent: string, sessionId: string): Promise<void> {
+  if (!REMOTE_SOURCES[agent]) throw new Error("This agent's sessions cannot be deleted");
+  const targets = deletable(agent, sessionId, await listRemoteFiles(exec, agent));
+  for (const { abs, dir } of targets) {
+    await exec(REMOTE_DELETE_SCRIPT, [abs, dir ?? ""]);
+    sessionCache.delete(`${hostKey}\0${abs}`);
+  }
+}
+
 /**
  * Validate a requested local date and cap it to a rolling 31-day window.
  * Missing/invalid/future values intentionally fall back to today.

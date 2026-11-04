@@ -39,6 +39,8 @@
 .session-row-action:last-child { margin-right: 4px; }
 .session-row:hover .session-row-action, .session-row:has(> .search-row.active) .session-row-action, .session-row-action:focus-visible { opacity: 1; }
 .session-row:hover .session-row-action:disabled { opacity: .35; }
+/* A delete armed by its first click: shown and red until the second. */
+.session-row-action.armed { opacity: 1; color: var(--danger, #dc5b5b); }
 
 .session-note { margin: 2px 16px 6px; color: var(--fg-dim); font-size: 12px; }
 .session-error { margin: 6px 16px; color: var(--danger, #dc5b5b); font-size: 12px; overflow-wrap: anywhere; }

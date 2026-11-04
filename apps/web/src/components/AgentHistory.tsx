@@ -19,7 +19,7 @@ import type { SessionOpenMode } from "../sessionOpenPolicy";
 import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
 import { agentLaunch, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
 import { tildify } from "../tildify";
-import { HistoryIcon, NewPaneIcon } from "./icons";
+import { HistoryIcon, NewPaneIcon, TrashIcon } from "./icons";
 import { NewSessionButtons } from "./NewSessionButtons";
 import { RemoteSessions } from "./RemoteSessions";
 import "./SessionPicker.css";
@@ -126,6 +126,8 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
   const [stale, setStale] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  // The session whose delete button was clicked once; a second click deletes.
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
   // undefined = resolving, null = no scope to offer (not in a repo or folder
   // worth scoping to) — the toggle hides and the list shows everything.
   const [scopeInfo, setScopeInfo] = useState<ScopeInfo | null | undefined>(undefined);
@@ -403,6 +405,24 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
     onOpened?.();
   });
 
+  /** Delete a conversation's transcript, on the host its history comes from. */
+  const deleteSession = (s: AgentSession) => action.run(async () => {
+    setArmedDelete(null);
+    const response = await fetch(apiPath("/api/agent-sessions/delete"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: agentId, sessionId: s.sessionId, session: ssh?.session }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || String(response.status));
+    // Every loaded page of this agent's history, scoped or not, drops the row.
+    setByKey((pages) => Object.fromEntries(Object.entries(pages).map(([key, page]) => [
+      key,
+      key.split("|")[0] === agentId && page.sessions
+        ? { ...page, sessions: page.sessions.filter((item) => item.sessionId !== s.sessionId) }
+        : page,
+    ])));
+  });
+
   /** Runs in the picker's shell, or in a new pane beside a running agent. */
   const startLocal = (agent: AgentConfig) => action.run(async () => {
     const source = findSessionPane(historyPaneId);
@@ -436,7 +456,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
       s.cwd && !inWorktreeGroup ? tildify(s.cwd) : null,
     ].filter(Boolean);
     return (
-      <div className="session-row" key={s.sessionId}>
+      <div className="session-row" key={s.sessionId} onMouseLeave={() => armedDelete === s.sessionId && setArmedDelete(null)}>
         <button
           data-idx={idx}
           className={`search-row pane ${idx === selected ? "active" : ""}`}
@@ -475,6 +495,19 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
             onClick={() => resume(s, "new")}
           >
             <NewPaneIcon />
+          </button>
+        )}
+        {/* Open conversations cannot be deleted; recently active ones are refused by the server too. */}
+        {!isOpen && (
+          <button
+            className={`session-icon-btn session-row-action ${armedDelete === s.sessionId ? "armed" : ""}`}
+            disabled={action.busy || isLive}
+            title={t(isLive ? "history.deleteActive" : armedDelete === s.sessionId ? "history.deleteConfirm" : "history.delete")}
+            aria-label={t("history.delete")}
+            onMouseEnter={() => setSelected(idx)}
+            onClick={() => (armedDelete === s.sessionId ? void deleteSession(s) : setArmedDelete(s.sessionId))}
+          >
+            <TrashIcon />
           </button>
         )}
       </div>

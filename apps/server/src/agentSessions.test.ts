@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { listAgentSessions, listAgentUsage, listRemoteAgentUsage, normalizeUsageSince } from "./agentSessions.js";
+import { deleteAgentSession, listAgentSessions, listAgentUsage, listRemoteAgentUsage, normalizeUsageSince } from "./agentSessions.js";
 
 const now = new Date(2026, 7, 3, 12, 0, 0);
 
@@ -178,6 +178,35 @@ test("session history shows each agent's own title above the first prompt", asyn
       codex.sessions?.map((s) => [s.sessionId, s.title]).sort(),
       [["named", "Diagnose arm64 build"], ["unnamed", undefined]],
     );
+  } finally {
+    process.env.HOME = originalHome;
+    await fs.promises.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("deleting a session removes its transcript and folder, unless it was just active", async () => {
+  const originalHome = process.env.HOME;
+  const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "termany-agent-delete-"));
+  try {
+    process.env.HOME = home;
+    const dir = path.join(home, ".claude", "projects", "-proj");
+    const old = "11111111-1111-1111-1111-111111111111";
+    const live = "22222222-2222-2222-2222-222222222222";
+    await fs.promises.mkdir(path.join(dir, old, "tool-results"), { recursive: true });
+    for (const id of [old, live]) {
+      await fs.promises.writeFile(path.join(dir, `${id}.jsonl`), JSON.stringify({ type: "user", cwd: home, message: { content: id } }) + "\n");
+    }
+    const hourAgo = new Date(Date.now() - 60 * 60_000);
+    await fs.promises.utimes(path.join(dir, `${old}.jsonl`), hourAgo, hourAgo);
+
+    await deleteAgentSession("claude", old);
+    assert.equal(fs.existsSync(path.join(dir, `${old}.jsonl`)), false);
+    assert.equal(fs.existsSync(path.join(dir, old)), false);
+    assert.deepEqual((await listAgentSessions("claude")).sessions?.map((s) => s.sessionId), [live]);
+
+    await assert.rejects(deleteAgentSession("claude", live), /active in the last 2 minutes/);
+    assert.equal(fs.existsSync(path.join(dir, `${live}.jsonl`)), true);
+    await assert.rejects(deleteAgentSession("claude", "33333333-3333-3333-3333-333333333333"), /not found/);
   } finally {
     process.env.HOME = originalHome;
     await fs.promises.rm(home, { recursive: true, force: true });
