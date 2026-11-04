@@ -39,6 +39,7 @@ import { AgentUsage } from "./AgentUsage";
 import { PortForwardDialog } from "./PortForwardDialog";
 import { ProviderPane } from "./ProviderPane";
 import { SessionPickerButton } from "./SessionPicker";
+import { NewSessionButtons } from "./NewSessionButtons";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
@@ -382,7 +383,10 @@ function PaneHeader({
         {(leaf.view ?? "terminal") === "terminal" && (
           // Only a tmux pane names its session; the attachment, and so the
           // label, is cleared when the session ends.
-          <SessionPickerButton paneId={leaf.id} title={leaf.tmuxSession ? leaf.title : undefined} />
+          <>
+            <NewSessionButtons paneId={leaf.id} />
+            <SessionPickerButton paneId={leaf.id} title={leaf.tmuxSession ? leaf.title : undefined} />
+          </>
         )}
       </span>
       <span className="pane-head-spacer" />

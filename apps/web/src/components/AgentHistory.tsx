@@ -1,7 +1,7 @@
 import { textInputProps } from "../textInputProps";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { shellQuote } from "../agentCommand";
-import { useAgentConfigs, agentCommand, type AgentConfig } from "../agents";
+import { useAgentConfigs, type AgentConfig } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
@@ -14,13 +14,12 @@ import {
   subscribeAgentActivity,
   terminalSessionId,
 } from "../terminal/manager";
-import { findSessionPane, openSessionPane, sessionPanes, showPane, showsAgent } from "../sessionNavigation";
+import { openSessionPane, sessionPanes, showPane } from "../sessionNavigation";
 import type { SessionOpenMode } from "../sessionOpenPolicy";
 import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
 import { agentLaunch, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
 import { tildify } from "../tildify";
 import { HistoryIcon, NewPaneIcon, TrashIcon } from "./icons";
-import { NewSessionButtons } from "./NewSessionButtons";
 import { RemoteSessions } from "./RemoteSessions";
 import "./SessionPicker.css";
 
@@ -112,7 +111,6 @@ function formatTokens(n: number): string {
 export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpened }: { paneId?: string; autoFocus?: boolean; onOpened?: () => void }) {
   const { t } = useI18n();
   const ime = useImeGuard();
-  const addPane = useStore((s) => s.addPane);
   const workspaces = useStore((s) => s.workspaces);
   const agentConfigs = useAgentConfigs();
   const agents = SESSION_AGENTS
@@ -423,16 +421,6 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
     ])));
   });
 
-  /** Runs in the picker's shell, or in a new pane beside a running agent. */
-  const startLocal = (agent: AgentConfig) => action.run(async () => {
-    const source = findSessionPane(historyPaneId);
-    const inPlace = !!source && (source.view ?? "terminal") === "terminal" && !source.sshTarget && !showsAgent(source.id);
-    const id = inPlace ? source.id : addPane("terminal", agent.name, historyPaneId);
-    if (!id) throw new Error(t("tmux.noRoom"));
-    queueCommandWhenShellReady(id, agentCommand(agent));
-    onOpened?.();
-  });
-
   const switchAgent = (id: string) => {
     setAgentId(id);
     setQuery("");
@@ -575,12 +563,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
             query={query}
             onOpened={onOpened}
           />
-        ) : (
-          <div className="session-section-head">
-            <span className="session-section-label">{t("sessions.new")}</span>
-            <NewSessionButtons agents={agentConfigs} busy={action.busy} onCreate={(agent) => void startLocal(agent)} />
-          </div>
-        )}
+        ) : null}
 
         <div className="history-tabs">
           <span className="session-section-label">{t("sessions.history")}</span>

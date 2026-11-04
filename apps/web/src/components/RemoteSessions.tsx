@@ -1,12 +1,11 @@
-import { useAgentConfigs, type AgentConfig } from "../agents";
+import { useAgentConfigs } from "../agents";
 import { useI18n } from "../i18n";
-import { findTmuxPane, openSessionPane, showsAgent } from "../sessionNavigation";
+import { findTmuxPane, openSessionPane } from "../sessionNavigation";
 import type { SessionOpenMode } from "../sessionOpenPolicy";
 import type { RemoteSessionList, SessionAction } from "../sessionPickerState";
 import { tildify } from "../tildify";
-import { agentLaunch, createRemoteSession, endRemoteSession, sessionAgentLabel, type RemoteSession } from "../tmuxClient";
+import { endRemoteSession, sessionAgentLabel, type RemoteSession } from "../tmuxClient";
 import { NewPaneIcon, RefreshIcon, SpinnerIcon, TerminalIcon, TrashIcon } from "./icons";
-import { NewSessionButtons } from "./NewSessionButtons";
 import "./SessionPicker.css";
 
 /**
@@ -39,14 +38,6 @@ export function RemoteSessions({ host, sourcePaneId, remote, action, query = "",
     });
     onOpened?.();
   };
-  const create = (agent: AgentConfig) => action.run(async () => {
-    if (agent.id !== "codex" && agent.id !== "claude") throw new Error(t("sessions.error.noAgent", { agent: sessionAgentLabel(agent.id) }));
-    // Decided before the reload, from the list the picker showed.
-    const mode = showsAgent(sourcePaneId, remote.sessions) ? "new" : "switch";
-    const name = await createRemoteSession(host.session, agentLaunch(agent));
-    await remote.reload();
-    await open(name, agentLabel(agent.id), mode);
-  });
   const end = (name: string) => action.run(async () => {
     await endRemoteSession(host.session, name);
     await remote.reload();
@@ -62,7 +53,6 @@ export function RemoteSessions({ host, sourcePaneId, remote, action, query = "",
         onClick={() => void action.run(remote.reload)}>
         {busy ? <SpinnerIcon /> : <RefreshIcon />}
       </button>
-      <NewSessionButtons agents={agents} busy={busy} onCreate={agent => void create(agent)} />
     </div>
     <div className="tmux-list">{visible.map(s => {
       const rowLabel = labelFor(s);
