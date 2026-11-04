@@ -237,9 +237,14 @@ export function terminalConnectionStatus(
   return sessions.get(terminalSessionId(paneId, sshTarget))?.connectionState ?? "idle";
 }
 
-export function subscribeSshNaturalExit(paneId: string, listener: () => void): () => void {
+export function subscribeSshNaturalExit(paneId: string, listener: (exit: { sshTarget: string; tmuxSession?: string }) => void | Promise<void>): () => void {
   const onExit = (event: Event) => {
-    if ((event as CustomEvent<{ paneId: string }>).detail?.paneId === paneId) listener();
+    const detail = (event as CustomEvent<{ paneId: string; sshTarget: string; tmuxSession?: string }>).detail;
+    if (detail?.paneId !== paneId) return;
+    Promise.resolve(listener(detail)).catch(error => {
+      const session = sessions.get(terminalSessionId(paneId, detail.sshTarget));
+      session?.term.write(`\r\n[${error instanceof Error ? error.message : String(error)}]\r\n`);
+    });
   };
   window.addEventListener(SSH_EXIT_EVENT, onExit);
   return () => window.removeEventListener(SSH_EXIT_EVENT, onExit);
@@ -1401,7 +1406,7 @@ function installStuckDragGuard() {
   );
 }
 
-function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
+function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id, tmuxSession?: string): Session {
   installStuckDragGuard();
   const existing = sessions.get(id);
   if (existing) return existing;
@@ -1539,6 +1544,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
           restore: "1",
           cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined,
           ssh: sshTarget,
+          tmux: tmuxSession,
         });
 
   const initialBackend = spawnBackend();
@@ -1609,10 +1615,10 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         session.ended = true;
         session.connectionState = "disconnected";
         notifyConnectionStatus();
-        // Only a remote shell that ended on its own hands the pane back to a
-        // local shell; a dropped link keeps the host and waits for Enter.
+        // A clean tmux exit returns to the host shell; a plain SSH exit goes
+        // local. A dropped link keeps its destination and waits for Enter.
         if (!reason && sshExitDisposition(exit) === "go-local") {
-          window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId } }));
+          window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId, sshTarget, tmuxSession } }));
           return;
         }
         const message = translate(getLanguage(), reason ? "ssh.sessionError" : "ssh.sessionEnded", reason ? { reason } : undefined);
@@ -1948,6 +1954,7 @@ export function attachSession(
   cwdFrom?: string[],
   sshTarget?: string,
   paneId = id,
+  tmuxSession?: string,
 ) {
   activeSessionByPane.set(paneId, id);
   let owned = sessionIdsByPane.get(paneId);
@@ -1956,7 +1963,7 @@ export function attachSession(
     sessionIdsByPane.set(paneId, owned);
   }
   owned.add(id);
-  const s = getSession(id, cwdFrom, sshTarget, paneId);
+  const s = getSession(id, cwdFrom, sshTarget, paneId, tmuxSession);
   if (sshTarget && s.ended) s.restart?.();
   host.appendChild(s.el);
   if (!s.opened) {

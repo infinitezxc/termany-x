@@ -16,6 +16,7 @@ import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desk
 import { reconcileAttachedTerminalFocus } from "../terminal/focusHandoff";
 import { activeHtab, cwdCandidates, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
+import { handleSshNaturalExit } from "../sessionNavigation";
 import { ChevronIcon } from "./icons";
 
 /**
@@ -23,7 +24,7 @@ import { ChevronIcon } from "./icons";
  * only DETACH the node — the session keeps living in the registry so its shell
  * and scrollback survive being backgrounded.
  */
-export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string }) {
+export function TerminalPane({ id, sshTarget, tmuxSession }: { id: string; sshTarget?: string; tmuxSession?: string }) {
   const sessionId = terminalSessionId(id, sshTarget);
   const hostRef = useRef<HTMLDivElement>(null);
   const scrollJumpTimer = useRef<number | null>(null);
@@ -36,9 +37,7 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
     atBottom: true,
   });
 
-  useEffect(() => subscribeSshNaturalExit(id, () => {
-    useStore.getState().setPaneSshTarget(id);
-  }), [id]);
+  useEffect(() => subscribeSshNaturalExit(id, exit => handleSshNaturalExit(id, exit)), [id]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -50,6 +49,7 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
       cwdCandidates(state, id),
       sshTarget,
       id,
+      tmuxSession,
     );
 
     // Attaching is the terminal's readiness boundary. The parent SplitView
@@ -87,7 +87,7 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
       unsubscribeScrollState();
       detachSession(sessionId, host);
     };
-  }, [id, sessionId, sshTarget]);
+  }, [id, sessionId, sshTarget, tmuxSession]);
 
   const revealScrollJump = () => {
     if (!scrollState.hasOverflow) return;

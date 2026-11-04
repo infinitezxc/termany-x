@@ -160,6 +160,20 @@ export class AgentActivityTracker {
     }
   }
 
+  /**
+   * An agent that already owns the terminal when it attaches — one running in
+   * a tmux session. Its input belongs to the agent from the start, and since
+   * nothing says whether it is mid-turn, it starts as working: the rendered
+   * screen settles it to done once it holds still, or keeps it working while
+   * the agent repaints.
+   */
+  attachAgent(id: string, agent: string): void {
+    const stream = this.stream(id);
+    if (stream.agentActive) return;
+    stream.agent = cleanAgent(agent);
+    this.startTask(id, agent, false);
+  }
+
   /** Registering working is the authoritative start of one new task. */
   register(
     id: string,

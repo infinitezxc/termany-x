@@ -18,7 +18,8 @@ import { AgentActivityTracker } from "./agentActivity.js";
 import { detectAgentExecutable, detectCommandExecutable, parseAgentDetectionInput } from "./agentDetection.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { REMOTE_FOREGROUND_SCRIPT, RemoteShellIdentity, remoteForegroundIsShell } from "./remoteForeground.js";
-import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage } from "./agentSessions.js";
+import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage, listRemoteAgentSessions, listRemoteAgentUsage, deleteAgentSession, deleteRemoteAgentSession } from "./agentSessions.js";
+import { UUID } from "./uuid.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, killRemoteProcess, readRemoteSystemStats, readSystemStats } from "./systemStats.js";
@@ -38,6 +39,7 @@ import {
   remoteUpload,
 } from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
+import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
 import { bindHost, createRequestGuard, isLoopbackHost } from "./requestGuard.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -417,6 +419,8 @@ interface PtySession {
   detachedAt: number | null;
   /** Null is the local login shell; otherwise the OpenSSH destination. */
   sshTarget: string | null;
+  /** The remote tmux session this SSH pane is attached to, if any. */
+  tmuxSession?: string | null;
   /** Local SSH diagnostics stay out of the application's PTY output. */
   sshLogPath?: string;
   /** In-band file transfer, wired in wireSession() as the pty is attached. */
@@ -443,6 +447,37 @@ const sshPortForwarding = new SshPortForwarding();
  * than quietly fall back to the local disk, where the same path means
  * something else entirely.
  */
+/**
+ * A pane attaching to a tmux session that runs an agent never sees the agent
+ * start, so its activity is marked here instead. tmux is asked once the pane
+ * draws its first output: the pane's connection is up by then, and the
+ * question rides on it.
+ */
+function attachTmuxAgent(sessionId: string, session: PtySession, tmuxSession: string) {
+  const first = session.pty.onData(() => {
+    first.dispose();
+    const args = sshPortForwarding.execArgs(sessionId);
+    if (!args) return;
+    void tmuxSessionAgent(args, tmuxSession)
+      .then((agent) => {
+        if (agent && ptySessions.get(sessionId) === session) activityTracker.attachAgent(sessionId, agent);
+      })
+      .catch(() => { /* no label: the pane simply shows no status until a task starts */ });
+  });
+}
+
+/**
+ * The directory of the tmux session an SSH pane is attached to — where its
+ * shell is. The pane's own live cwd is the `tmux attach` client's, which stays
+ * wherever the connection started. Undefined for a pane without tmux, or
+ * when tmux cannot say (the session just ended), so callers fall back to the
+ * live cwd.
+ */
+async function tmuxPaneDir(sessionId: string, remote: { args: string[] }): Promise<string | undefined> {
+  const tmux = ptySessions.get(sessionId)?.tmuxSession;
+  return tmux ? tmuxSessionCwd(remote.args, tmux).catch(() => undefined) : undefined;
+}
+
 function remoteFsFor(sessionId: string | null): { args: string[]; target: string } | null {
   if (!sessionId?.includes(":ssh:")) return null;
   const session = ptySessions.get(sessionId);
@@ -1266,10 +1301,11 @@ const http = createServer((req, res) => {
       let dir = requested?.trim();
       const remote = remoteFsFor(sessionId);
       if (remote) {
+        const start = dir || await tmuxPaneDir(sessionId, remote);
         json(
           200,
-          dir
-            ? await remoteList(remote.args, dir)
+          start
+            ? await remoteList(remote.args, start)
             : await remoteListSession(remote.args, remoteDirForConnection(remote.target) ?? ""),
         );
         return;
@@ -1605,6 +1641,25 @@ const http = createServer((req, res) => {
   // Repeated `root` params scope the list to sessions under those directories
   // (the browser passes the current repo's worktree roots); `cursor` + `limit`
   // page through newest-first transcript headers without full-file token scans.
+  if (req.method === "POST" && reqUrl.pathname === "/api/agent-sessions/delete") {
+    readJson(req)
+      .then(async (body) => {
+        const agent = String(body?.agent ?? "");
+        const sessionId = String(body?.sessionId ?? "");
+        if (!UUID.test(sessionId)) throw new Error("Invalid session ID");
+        // An SSH pane's history is its host's, so that is where it is deleted.
+        const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
+        if (remote) {
+          await deleteRemoteAgentSession((script, args) => remoteSh(remote.args, script, args), remote.target, agent, sessionId);
+        } else {
+          await deleteAgentSession(agent, sessionId);
+        }
+        json(200, { ok: true });
+      })
+      .catch((error) => json(400, { error: error instanceof Error ? error.message : String(error) }));
+    return;
+  }
+
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-sessions") {
     (async () => {
       const agent = reqUrl.searchParams.get("agent") ?? "claude";
@@ -1724,6 +1779,37 @@ const http = createServer((req, res) => {
       }
       json(200, { ports, remoteSessions: remoteIds, forwards });
     })().catch(fail);
+    return;
+  }
+
+  // Remote tmux sessions on the host an SSH pane is connected to. `session` is
+  // that pane's terminal session id; it supplies the multiplexed SSH args.
+  // Every failure is a 400 with its message, which the picker shows.
+  const tmuxRoutes: Record<string, (remote: NonNullable<ReturnType<typeof remoteFsFor>>, body: any) => Promise<unknown>> = {
+    "GET /api/tmux": async (remote) => ({ sessions: await listTmuxWithConversations(remote.args, remote.target) }),
+    "POST /api/tmux/create": async (remote, body) => {
+      // Without an explicit directory, start where the pane currently is.
+      const cwd = body.cwd || (await tmuxPaneDir(body.session, remote))
+        || await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "");
+      const name = await createTmux(remote.args, {
+        name: body.name, cwd, command: body.command, agent: body.agent, conversationId: body.conversationId,
+      });
+      return { name };
+    },
+    "POST /api/tmux/kill": async (remote, body) => {
+      await killTmux(remote.args, body.name);
+      return { ok: true };
+    },
+  };
+  const tmuxRoute = tmuxRoutes[`${req.method} ${reqUrl.pathname}`];
+  if (tmuxRoute) {
+    (req.method === "GET" ? Promise.resolve({ session: reqUrl.searchParams.get("session") }) : readJson(req))
+      .then(async (body) => {
+        const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
+        if (!remote) throw new Error("Connect to an SSH host first");
+        json(200, await tmuxRoute(remote, body));
+      })
+      .catch((error) => json(400, { error: error instanceof Error ? error.message : String(error) }));
     return;
   }
 
@@ -2049,12 +2135,14 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
  */
 /**
  * Run a git query for a pane: in its shell's cwd on this machine, or — for an
- * SSH pane — in the remote shell's cwd with every git call sent over ssh.
+ * SSH pane — in the remote shell's cwd (its tmux session's, when attached to
+ * one) with every git call sent over ssh.
  */
 async function withSessionGit<T>(sessionId: string, fn: (cwd: string) => Promise<T>): Promise<T> {
   const remote = remoteFsFor(sessionId);
   if (!remote) return fn(await sessionCwd(sessionId));
-  const cwd = await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "");
+  const cwd = (await tmuxPaneDir(sessionId, remote))
+    ?? await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "");
   return withGitHost(remoteGitHost(remote.args), () => fn(cwd));
 }
 
@@ -2141,12 +2229,13 @@ wss.on("connection", async (ws: WebSocket, req) => {
   const url = new URL(req.url ?? "/", "ws://localhost");
   const sessionId = url.searchParams.get("session");
   const sshTarget = url.searchParams.get("ssh");
+  const tmuxSession = url.searchParams.get("tmux");
   const agent = url.searchParams.get("agent") ?? undefined;
 
   // --- Reattach: the session's shell is still running (detached or stolen
   // from a stale connection) — resume it instead of spawning a fresh one.
   const existing = sessionId ? ptySessions.get(sessionId) : undefined;
-  if (existing && existing.sshTarget === sshTarget) {
+  if (existing && existing.sshTarget === sshTarget && (existing.tmuxSession ?? null) === tmuxSession) {
     existing.reconcileActivity?.();
     console.log(`[termany] client #${cid} reattached to session ${sessionId} (pid ${existing.pty.pid})`);
     activityTracker.bindAgent(sessionId!, agent);
@@ -2289,7 +2378,11 @@ wss.on("connection", async (ws: WebSocket, req) => {
         sshArgs = prepared.args;
         sshControlPath = prepared.controlPath;
       }
-      sshArgs = sshInteractiveArgsForConnection(sshTarget, sshArgs, true);
+      // A tmux pane attaches directly: the session keeps its own directory, and
+      // its foreground process is tmux rather than the login shell to track.
+      sshArgs = tmuxSession
+        ? ["-t", ...sshArgs, tmuxAttachCommand(tmuxSession)]
+        : sshInteractiveArgsForConnection(sshTarget, sshArgs, true);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2330,6 +2423,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     ws,
     detachedAt: null,
     sshTarget,
+    tmuxSession,
     sshLogPath: sshControlPath ? `${sshControlPath}.log` : undefined,
   };
   if (sessionId) ptySessions.set(sessionId, session);
@@ -2339,6 +2433,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
   }
   if (sessionId) activityTracker.bindAgent(sessionId, agent);
   wireSession(sessionId ?? undefined, session);
+  if (sessionId && tmuxSession) attachTmuxAgent(sessionId, session, tmuxSession);
 
   pendingMessages.splice(0).forEach(applyClientMessage);
   if (url.searchParams.get("restore") === "1") sendTerminalSnapshot(session, ws);

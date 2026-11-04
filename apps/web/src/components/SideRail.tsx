@@ -8,16 +8,16 @@ import {
   FilesIcon,
   GearIcon,
   GitBranchIcon,
-  HistoryIcon,
   TerminalIcon,
 } from "./icons";
 
 /** One entry per pane kind this rail can quick-create. */
-const RAIL_ITEMS: Array<{ view: RailItemId; icon: () => JSX.Element }> = [
+// History has no button here: the session picker on each terminal pane's
+// header (and Cmd/Ctrl+Shift+H) covers it. Its setting still governs the pane menu.
+const RAIL_ITEMS: Array<{ view: Exclude<RailItemId, "history">; icon: () => JSX.Element }> = [
   { view: "terminal", icon: TerminalIcon },
   { view: "files", icon: FilesIcon },
   { view: "git", icon: GitBranchIcon },
-  { view: "history", icon: HistoryIcon },
   { view: "usage", icon: ChartIcon },
   { view: "monitor", icon: ActivityIcon },
 ];
@@ -25,9 +25,9 @@ const RAIL_ITEMS: Array<{ view: RailItemId; icon: () => JSX.Element }> = [
 /**
  * Workspace-level quick-action rail, sitting beside the pane card (like the
  * left sidebar's page tree, but for panes). Not tied to any one pane — each
- * button splits the currently focused pane and opens a fresh one directly in
- * that view, instead of switching an existing pane's view in place (that's
- * still the per-pane header button, toggled via togglePaneView). The settings
+ * button splits the focused pane and opens a fresh one directly in that
+ * view, instead of switching an existing pane's view in place (that's still
+ * the per-pane header button, toggled via togglePaneView). The settings
  * button is pinned to the bottom (margin-top: auto) so it stays reachable
  * regardless of how many quick-create buttons sit above it.
  */

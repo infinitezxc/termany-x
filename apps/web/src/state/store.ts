@@ -73,6 +73,8 @@ export type Pane =
        *  the local login shell. Kept in layout state so relaunch reconnects to
        *  the same host. */
       sshTarget?: string;
+      terminalRevision?: number;
+      tmuxSession?: string;
       /** Human-readable profile name shown in the terminal header. */
       sshLabel?: string;
       /** Which agent CLI conversation this pane hosts, registered when the
@@ -271,7 +273,7 @@ interface State {
   nextPane: () => void;
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
-  setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
+  replacePaneSession: (leafId: string, destination: { title: string; sshTarget?: string; sshLabel?: string; tmuxSession?: string; agentSession?: { agent: string; sessionId: string } }) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
@@ -286,7 +288,11 @@ interface State {
     view: PaneView,
     title?: string,
     cwdFrom?: string,
-    opts?: { inheritSsh?: boolean },
+    /** A terminal's destination: inherited from the source pane, or named. */
+    opts?: {
+      inheritSsh?: boolean; tmuxSession?: string; sshTarget?: string; sshLabel?: string;
+      agentSession?: { agent: string; sessionId: string };
+    },
   ) => string | null;
   /** Show the pane's cached local shell or an OpenSSH destination. */
   setPaneSshTarget: (leafId: string, target?: string, label?: string) => void;
@@ -400,33 +406,6 @@ export interface PaneLocation {
   nodeId: string;
   tabId: string;
   paneId: string;
-}
-
-/**
- * Every open pane's registered agent conversation, keyed "agent|sessionId" —
- * the session-history browser uses this to jump to an already-open
- * conversation instead of resuming a second copy of it.
- */
-export function agentSessionPanes(workspaces: Workspace[]): Map<string, PaneLocation> {
-  const out = new Map<string, PaneLocation>();
-  const collect = (p: Pane, loc: Omit<PaneLocation, "paneId">) => {
-    if (p.kind === "leaf") {
-      if (p.agentSession) {
-        out.set(`${p.agentSession.agent}|${p.agentSession.sessionId}`, { ...loc, paneId: p.id });
-      }
-      return;
-    }
-    for (const c of p.children) collect(c, loc);
-  };
-  for (const ws of workspaces) {
-    const stack = [...ws.roots];
-    while (stack.length) {
-      const n = stack.pop()!;
-      for (const h of n.htabs) collect(h.layout, { workspaceId: ws.id, nodeId: n.id, tabId: h.id });
-      stack.push(...n.children);
-    }
-  }
-  return out;
 }
 
 /** Insert `leaf` beside `targetId` on the given edge; merges into same-dir parents. */
@@ -1463,25 +1442,14 @@ export const useStore = create<State>((set, get) => ({
       })),
     })),
 
-  setPaneAgentSession: (leafId, info) =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => ({
-        ...ws,
-        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
-          ...n,
-          htabs: n.htabs.map((h) => {
-            if (h.id !== n.activeHTab) return h;
-            const tag = (p: Pane): Pane =>
-              p.kind === "leaf"
-                ? p.id === leafId
-                  ? { ...p, agentSession: info }
-                  : p
-                : { ...p, children: p.children.map(tag) };
-            return { ...h, layout: tag(h.layout) };
-          }),
-        })),
-      })),
+  replacePaneSession: (leafId, destination) => set((s) => ({
+    workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+      ...leaf, view: "terminal", title: destination.title,
+      sshTarget: destination.sshTarget, sshLabel: destination.sshLabel,
+      tmuxSession: destination.tmuxSession,
+      agentSession: destination.agentSession, terminalRevision: (leaf.terminalRevision ?? 0) + 1,
     })),
+  })),
 
   togglePaneView: (leafId) =>
     set((s) => ({
@@ -1591,6 +1559,9 @@ export const useStore = create<State>((set, get) => ({
               ...makeLeaf(title ?? nextPaneTitle(h.layout), source),
               view,
               ...(view === "terminal" && opts?.inheritSsh ? inheritedSsh(s, source) : undefined),
+              ...(view === "terminal" && opts?.sshTarget ? { sshTarget: opts.sshTarget, sshLabel: opts.sshLabel } : undefined),
+              ...(view === "terminal" && opts?.tmuxSession ? { tmuxSession: opts.tmuxSession } : undefined),
+              ...(view === "terminal" && opts?.agentSession ? { agentSession: opts.agentSession } : undefined),
             };
             created = leaf.id;
             const next = {
@@ -1612,6 +1583,7 @@ export const useStore = create<State>((set, get) => ({
       workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
         ...leaf,
         view: "terminal",
+        tmuxSession: leaf.sshTarget === destination ? leaf.tmuxSession : undefined,
         sshTarget: destination,
         sshLabel: destination ? label?.trim() || destination : undefined,
       })),

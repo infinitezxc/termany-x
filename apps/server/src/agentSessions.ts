@@ -15,11 +15,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { UUID_PATTERN } from "./uuid.js";
 
 export interface AgentSession {
   sessionId: string;
   cwd: string | null;
+  /** The conversation's first prompt. */
   preview: string;
+  /** The agent's own name for the conversation, when it has one that is not
+   *  just the first prompt cut short. */
+  title?: string;
   mtimeMs: number;
   /** Cumulative tokens consumed over the session's lifetime (null if unknown). */
   totalTokens: number | null;
@@ -112,6 +117,59 @@ function cleanPreview(s: string): string {
   return s.replace(/\uFFFD+$/, "").replace(/\s+/g, " ").trim().slice(0, PREVIEW_CHARS);
 }
 
+/**
+ * A title only when it adds something: Codex first names a thread after its
+ * prompt cut short, and that would just repeat the line under it.
+ */
+function sessionTitle(title: string | null | undefined, preview: string): string | undefined {
+  const clean = cleanPreview(title ?? "");
+  if (!clean) return undefined;
+  const stem = clean.replace(/(?:\.\.\.|…)$/, "");
+  return preview.startsWith(stem) ? undefined : clean;
+}
+
+const AI_TITLE = '"type":"ai-title"';
+/** Bytes read from the end of a Claude transcript to find its current title,
+ *  which Claude Code appends again every few turns. */
+const TITLE_TAIL_BYTES = 256 * 1024;
+
+/** The last AI title among `lines`, the one Claude Code currently shows. */
+function lastAiTitle(lines: Iterable<string>): string | null {
+  let title: string | null = null;
+  for (const line of lines) {
+    if (!line.includes(AI_TITLE)) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry?.type === "ai-title" && typeof entry.aiTitle === "string") title = entry.aiTitle;
+    } catch {
+      /* a line cut by the tail read or still being written */
+    }
+  }
+  return title;
+}
+
+/** The last `bytes` of a local file as lines; the first, probably partial, is dropped. */
+async function tailLines(abs: string, bytes: number): Promise<string[]> {
+  const handle = await fs.promises.open(abs, "r");
+  try {
+    const { size } = await handle.stat();
+    const start = Math.max(0, size - bytes);
+    const buffer = Buffer.alloc(size - start);
+    await handle.read(buffer, 0, buffer.length, start);
+    const lines = buffer.toString("utf8").split("\n");
+    return start > 0 ? lines.slice(1) : lines;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Override a parsed session's title with Claude's AI title, when there is one. */
+function withClaudeTitle(session: AgentSession, aiTitle: string | null): AgentSession {
+  const title = sessionTitle(aiTitle ?? session.title, session.preview);
+  const { title: _old, ...rest } = session;
+  return title ? { ...rest, title } : rest;
+}
+
 /** Lines of a local transcript; breaking out of the loop closes the file. */
 function fileLines(abs: string): AsyncIterable<string> {
   return readline.createInterface({
@@ -122,7 +180,8 @@ function fileLines(abs: string): AsyncIterable<string> {
 
 /** Read only enough of a Claude transcript to render one history row. */
 async function parseClaudeSessionHead(abs: string, st: { mtimeMs: number }): Promise<AgentSession> {
-  return parseClaudeHeadLines(fileLines(abs), abs, st.mtimeMs);
+  const session = await parseClaudeHeadLines(fileLines(abs), abs, st.mtimeMs);
+  return withClaudeTitle(session, lastAiTitle(await tailLines(abs, TITLE_TAIL_BYTES)));
 }
 
 /** `abs` only names the session (claude files are `<session id>.jsonl`). */
@@ -164,12 +223,16 @@ async function parseClaudeHeadLines(
       const clean = text.trim();
       if (clean && !isInjectedContext(clean)) firstUserText = clean;
     }
-    if ((cwd && (summary || firstUserText)) || lineNo >= HEAD_LINES) break;
+    // A summary does not end the read: the first prompt is the line under it.
+    if ((cwd && firstUserText) || lineNo >= HEAD_LINES) break;
   }
+  const preview = cleanPreview(firstUserText || summary);
+  const title = sessionTitle(summary, preview);
   return {
     sessionId: path.posix.basename(abs.replace(/\\/g, "/"), ".jsonl"),
     cwd,
-    preview: cleanPreview(summary || firstUserText),
+    preview,
+    ...(title ? { title } : {}),
     mtimeMs,
     // Totals require a full transcript pass; history pagination deliberately
     // stays lightweight. A cached usage parse fills these fields automatically.
@@ -264,6 +327,7 @@ async function parseClaudeLines(
   let sawUsage = false;
   let contextTokens: number | null = null;
   let lineNo = 0;
+  let aiTitle: string | null = null;
   const buckets = new Map<string, UsageBucket>();
   // A single assistant message is written as several JSONL lines (one per
   // content block), each repeating the same usage — dedupe by message id +
@@ -300,7 +364,8 @@ async function parseClaudeLines(
         }
       }
     }
-    if (lineNo > HEAD_LINES || (cwd && (summary || firstUserText))) continue;
+    if (line.includes(AI_TITLE)) aiTitle = lastAiTitle([line]) ?? aiTitle;
+    if (lineNo > HEAD_LINES || (cwd && firstUserText)) continue;
     let entry: any;
     try {
       entry = JSON.parse(line);
@@ -333,11 +398,14 @@ async function parseClaudeLines(
     }
   }
 
+  const preview = cleanPreview(firstUserText || summary);
+  const title = sessionTitle(aiTitle ?? summary, preview);
   return {
     session: {
       sessionId: path.posix.basename(abs.replace(/\\/g, "/"), ".jsonl"),
       cwd,
-      preview: cleanPreview(summary || firstUserText),
+      preview,
+      ...(title ? { title } : {}),
       mtimeMs,
       totalTokens: sawUsage ? totalTokens : null,
       contextTokens,
@@ -470,6 +538,49 @@ async function listCodexFiles(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * Codex names threads in a separate append-only index: `{id, thread_name}`
+ * lines, where the last line for an ID is its current name.
+ */
+function parseCodexTitles(text: string): Map<string, string> {
+  const titles = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    if (!line.includes('"thread_name"')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (typeof entry?.id === "string" && typeof entry.thread_name === "string") titles.set(entry.id, entry.thread_name);
+    } catch {
+      /* cut by a tail read, or still being written */
+    }
+  }
+  return titles;
+}
+
+/** Bytes read from the end of Codex's thread index — thousands of threads. */
+const CODEX_INDEX_BYTES = 4 * 1024 * 1024;
+let codexTitleCache: { abs: string; mtimeMs: number; size: number; titles: Map<string, string> } | null = null;
+
+async function localCodexTitles(): Promise<Map<string, string>> {
+  const abs = path.join(os.homedir(), ".codex", "session_index.jsonl");
+  try {
+    const st = await fs.promises.stat(abs);
+    if (codexTitleCache?.abs !== abs || codexTitleCache.mtimeMs !== st.mtimeMs || codexTitleCache.size !== st.size) {
+      codexTitleCache = { abs, mtimeMs: st.mtimeMs, size: st.size, titles: parseCodexTitles((await tailLines(abs, CODEX_INDEX_BYTES)).join("\n")) };
+    }
+    return codexTitleCache.titles;
+  } catch {
+    return new Map();
+  }
+}
+
+/** Sessions with their Codex thread names; copies, as parsed sessions are cached. */
+function withCodexTitles(sessions: AgentSession[], titles: Map<string, string>): AgentSession[] {
+  return sessions.map((session) => {
+    const title = sessionTitle(titles.get(session.sessionId), session.preview);
+    return title ? { ...session, title } : session;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -639,7 +750,10 @@ export async function listAgentSessions(
       return ok ? s : { ...s, cwdMissing: true as const };
     })
   );
-  return { sessions: checked, nextCursor: index < files.length ? String(index) : null };
+  return {
+    sessions: agent === "codex" ? withCodexTitles(checked, await localCodexTitles()) : checked,
+    nextCursor: index < files.length ? String(index) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +789,8 @@ const REMOTE_SOURCES: Record<
     accept: (file: string) => boolean;
     /** Only head lines containing one of these are sent back — the ones the parser reads. */
     keep: string[];
+    /** Marks the title line to send from near the file's end, if the agent writes one there. */
+    titleKeep?: string;
     parse: (lines: string[], abs: string, mtimeMs: number) => Promise<AgentSession | null>;
     /** Lines the full (usage) parser reads, wherever they sit in the file. */
     usageKeep: string[];
@@ -688,7 +804,9 @@ const REMOTE_SOURCES: Record<
     accept: (file) => /\/[0-9a-f][0-9a-f-]{34}[0-9a-f]\.jsonl$/.test(file),
     // Most entry types carry cwd/gitBranch; a session may have no user line yet.
     keep: ['"type":"user"', '"type":"summary"', '"worktreeSession"', '"cwd":"'],
-    parse: parseClaudeHeadLines,
+    titleKeep: AI_TITLE,
+    // The title line, if any, follows the head lines.
+    parse: async (lines, abs, mtimeMs) => withClaudeTitle(await parseClaudeHeadLines(lines, abs, mtimeMs), lastAiTitle(lines)),
     // Assistant lines carry the usage and, like every entry, the cwd.
     usageKeep: ['"usage"'],
     parseFull: parseClaudeLines,
@@ -761,13 +879,16 @@ BEGIN { nkeep = split(keep, pats, "|") }
   print line
 }`;
 
-/** $1 = line count, $2 = keep patterns, $3 = awk program, then files. Each head is introduced
- *  by a RS (\036) line naming the file — raw control characters cannot occur inside JSONL,
- *  so the separator is unambiguous. */
+/** $1 = line count, $2 = keep patterns, $3 = awk program, $4 = title pattern (or empty), then
+ *  files. Each head is introduced by a RS (\036) line naming the file — raw control characters
+ *  cannot occur inside JSONL, so the separator is unambiguous. A title pattern adds the last
+ *  matching line near the file's end after its head. */
 const REMOTE_HEADS_SCRIPT =
-  'n=$1; keep=$2; prog=$3; shift 3; for f; do printf "\\036%s\\n" "$f"; ' +
+  'n=$1; keep=$2; prog=$3; title=$4; shift 4; for f; do printf "\\036%s\\n" "$f"; ' +
   `head -n "$n" < "$f" 2>/dev/null | head -c ${REMOTE_HEAD_INPUT_BYTES} | ` +
-  `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_STRING_BYTES} -v cap=${REMOTE_HEAD_OUTPUT_BYTES} "$prog"; done`;
+  `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_STRING_BYTES} -v cap=${REMOTE_HEAD_OUTPUT_BYTES} "$prog"; ` +
+  `if [ -n "$title" ]; then tail -c ${TITLE_TAIL_BYTES} < "$f" 2>/dev/null | LC_ALL=C grep -F -- "$title" | tail -n 1 | ` +
+  `LC_ALL=C awk -v keep="$title" -v k=${REMOTE_STRING_BYTES} -v cap=${REMOTE_STRING_BYTES * 2} "$prog"; fi; done`;
 
 /** String literals in usage lines are cut to this: room for any real cwd, model or id. */
 const REMOTE_USAGE_STRING_BYTES = 512;
@@ -786,6 +907,14 @@ const REMOTE_USAGE_SCRIPT =
   'for f; do printf "\\036%s\\n" "$f"; ' +
   'LC_ALL=C grep -F -- "$pats" < "$f" 2>/dev/null | ' +
   `LC_ALL=C awk -v keep="$keep" -v k=${REMOTE_USAGE_STRING_BYTES} -v cap=${REMOTE_USAGE_FILE_BYTES} "$prog"; done; exit 0`;
+
+/** The end of the host's Codex thread index; nothing when it has none. */
+const REMOTE_CODEX_INDEX_SCRIPT =
+  `f=$HOME/.codex/session_index.jsonl; if [ -f "$f" ]; then tail -c ${CODEX_INDEX_BYTES} < "$f"; fi; exit 0`;
+
+async function remoteCodexTitles(exec: RemoteExec): Promise<Map<string, string>> {
+  return parseCodexTitles((await exec(REMOTE_CODEX_INDEX_SCRIPT, [])).toString("utf8"));
+}
 
 /** $@ = directories; prints 1 or 0 per directory, in order. */
 const REMOTE_DIRS_SCRIPT = 'for d; do if [ -d "$d" ]; then echo 1; else echo 0; fi; done';
@@ -814,21 +943,21 @@ async function listRemoteFiles(exec: RemoteExec, agent: string): Promise<RemoteF
 }
 
 /** Shrunk head lines for each file, keyed by path — split into round trips that stay within budget. */
-async function remoteHeads(exec: RemoteExec, keep: string[], files: RemoteFile[]): Promise<Map<string, string[]>> {
+async function remoteHeads(exec: RemoteExec, keep: string[], files: RemoteFile[], titleKeep = ""): Promise<Map<string, string[]>> {
   const heads = new Map<string, string[]>();
   for (let i = 0; i < files.length; ) {
     const chunkFiles: RemoteFile[] = [];
     let output = REMOTE_HEADS_OUTPUT_BUDGET;
     let args = REMOTE_HEADS_ARGS_BUDGET;
     for (; i < files.length; i++) {
-      const outCost = Math.min(files[i].size, REMOTE_HEAD_OUTPUT_BYTES) + files[i].abs.length + 2;
+      const outCost = Math.min(files[i].size, REMOTE_HEAD_OUTPUT_BYTES + REMOTE_STRING_BYTES * 2) + files[i].abs.length + 2;
       const argCost = files[i].abs.length + 3;
       if (chunkFiles.length && (outCost > output || argCost > args)) break;
       chunkFiles.push(files[i]);
       output -= outCost;
       args -= argCost;
     }
-    const argv = [String(HEAD_LINES), keep.join("|"), REMOTE_SHRINK_AWK, ...chunkFiles.map((f) => f.abs)];
+    const argv = [String(HEAD_LINES), keep.join("|"), REMOTE_SHRINK_AWK, titleKeep, ...chunkFiles.map((f) => f.abs)];
     const out = (await exec(REMOTE_HEADS_SCRIPT, argv)).toString("utf8");
     for (const chunk of out.split("\x1e").slice(1)) {
       const [file, ...lines] = chunk.split("\n");
@@ -836,6 +965,36 @@ async function remoteHeads(exec: RemoteExec, keep: string[], files: RemoteFile[]
     }
   }
   return heads;
+}
+
+/**
+ * Each file's parsed session (null when it is not one), from the head cache
+ * where the file is unchanged, else from one round trip per batch of heads.
+ * `hostKey` keeps a host's transcripts apart from other machines' in the cache.
+ */
+async function remoteSessions(
+  exec: RemoteExec,
+  hostKey: string,
+  source: (typeof REMOTE_SOURCES)[string],
+  files: RemoteFile[],
+): Promise<Map<string, AgentSession | null>> {
+  const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
+  const missing = files.filter((f) => {
+    const hit = sessionCache.get(cacheKey(f.abs));
+    return !(hit && hit.mtimeMs === f.mtimeMs && hit.size === f.size);
+  });
+  const heads = missing.length ? await remoteHeads(exec, source.keep, missing, source.titleKeep) : new Map<string, string[]>();
+  const result = new Map<string, AgentSession | null>();
+  for (const file of files) {
+    let session = sessionCache.get(cacheKey(file.abs))?.session ?? null;
+    const lines = heads.get(file.abs);
+    if (lines) {
+      session = await source.parse(lines, file.abs, file.mtimeMs);
+      if (session) sessionCache.set(cacheKey(file.abs), { mtimeMs: file.mtimeMs, size: file.size, session });
+    }
+    result.set(file.abs, session);
+  }
+  return result;
 }
 
 /**
@@ -860,26 +1019,15 @@ export async function listRemoteAgentSessions(
   // more heads per trip to fill a page (shrunk heads are a few KB each;
   // remoteHeads still splits a batch that would exceed its budgets).
   const batchSize = roots.length ? REMOTE_SCOPED_BATCH : limit;
-  const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
   const sessions: AgentSession[] = [];
   const ids = new Set<string>();
   let index = start;
   while (index < files.length && sessions.length < limit) {
     const batch = files.slice(index, index + batchSize);
-    const missing = batch.filter((f) => {
-      const hit = sessionCache.get(cacheKey(f.abs));
-      return !(hit && hit.mtimeMs === f.mtimeMs && hit.size === f.size);
-    });
-    const heads = missing.length ? await remoteHeads(exec, source.keep, missing) : new Map<string, string[]>();
+    const parsed = await remoteSessions(exec, hostKey, source, batch);
     for (const file of batch) {
       index++;
-      const key = cacheKey(file.abs);
-      let session = sessionCache.get(key)?.session ?? null;
-      const lines = heads.get(file.abs);
-      if (lines) {
-        session = await source.parse(lines, file.abs, file.mtimeMs);
-        if (session) sessionCache.set(key, { mtimeMs: file.mtimeMs, size: file.size, session });
-      }
+      const session = parsed.get(file.abs) ?? null;
       if (!session || ids.has(session.sessionId)) continue;
       if (roots.length && (!session.cwd || !roots.some((root) => underRoot(session!.cwd!, root, "/")))) continue;
       ids.add(session.sessionId);
@@ -890,10 +1038,94 @@ export async function listRemoteAgentSessions(
   const dirs = [...new Set(sessions.flatMap((s) => (s.cwd ? [s.cwd] : [])))];
   const flags = dirs.length ? (await exec(REMOTE_DIRS_SCRIPT, dirs)).toString("utf8").split("\n") : [];
   const exists = new Map(dirs.map((d, i) => [d, flags[i] === "1"]));
+  const checked = sessions.map((s) => (!s.cwd || exists.get(s.cwd) ? s : { ...s, cwdMissing: true as const }));
   return {
-    sessions: sessions.map((s) => (!s.cwd || exists.get(s.cwd) ? s : { ...s, cwdMissing: true as const })),
+    sessions: agent === "codex" ? withCodexTitles(checked, await remoteCodexTitles(exec)) : checked,
     nextCursor: index < files.length ? String(index) : null,
   };
+}
+
+/** The conversation ID in a transcript's file name (Claude's `<id>.jsonl`, Codex's `rollout-…-<id>.jsonl`). */
+const TRANSCRIPT_ID = new RegExp(`(${UUID_PATTERN})\\.jsonl$`, "i");
+
+/**
+ * The parsed heads of specific conversations on an SSH host, keyed by ID —
+ * what a running tmux session shows in place of its generated name. Files are
+ * matched by the ID in their name, so only those heads cross the link.
+ */
+export async function remoteAgentSessionsById(
+  exec: RemoteExec,
+  hostKey: string,
+  agent: string,
+  ids: string[],
+): Promise<Map<string, AgentSession>> {
+  const result = new Map<string, AgentSession>();
+  const source = REMOTE_SOURCES[agent];
+  const wanted = new Set(ids.map((id) => id.toLowerCase()));
+  if (!source || !wanted.size) return result;
+  const idOf = (abs: string) => TRANSCRIPT_ID.exec(abs)?.[1].toLowerCase() ?? "";
+  const files = (await listRemoteFiles(exec, agent)).filter((f) => wanted.has(idOf(f.abs)));
+  const parsed = await remoteSessions(exec, hostKey, source, files);
+  // Files are newest first; the first session found for an ID wins.
+  for (const file of files) {
+    const session = parsed.get(file.abs);
+    if (session && !result.has(idOf(file.abs))) result.set(idOf(file.abs), session);
+  }
+  if (agent === "codex" && result.size) {
+    const titles = await remoteCodexTitles(exec);
+    for (const [id, session] of result) result.set(id, withCodexTitles([session], titles)[0]);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// deleting a conversation
+//
+// The transcript is found by ID in the same listing the history reads, never
+// from a path the client sends, and one written to recently is refused: it
+// may belong to an agent still running, in a pane or anywhere else. Claude
+// keeps a conversation's tool output and subagents in a folder named like its
+// transcript, which goes with it; the agents' own housekeeping elsewhere
+// (Claude's file history, Codex's thread index) is left to them.
+
+/** Written to within this long, a conversation may still be running. */
+const DELETE_QUIET_MS = 2 * 60_000;
+
+function deletable(agent: string, sessionId: string, files: { abs: string; mtimeMs: number }[]) {
+  if (!REMOTE_SOURCES[agent]) throw new Error("This agent's sessions cannot be deleted");
+  const id = sessionId.toLowerCase();
+  const matches = files.filter((f) => TRANSCRIPT_ID.exec(f.abs)?.[1].toLowerCase() === id);
+  if (!matches.length) throw new Error("Session not found");
+  if (matches.some((f) => Date.now() - f.mtimeMs < DELETE_QUIET_MS)) {
+    throw new Error("This session was active in the last 2 minutes and may still be running");
+  }
+  // Claude's sibling folder is `<id>/` beside `<id>.jsonl`; Codex has none.
+  return matches.map((f) => ({ abs: f.abs, dir: agent === "claude" ? f.abs.slice(0, -".jsonl".length) : null }));
+}
+
+/** Delete one of this machine's conversations, by ID. */
+export async function deleteAgentSession(agent: string, sessionId: string): Promise<void> {
+  const files = await listAgentFileEntries(agent);
+  const targets = deletable(agent, sessionId, files.map((f) => ({ abs: f.abs, mtimeMs: f.st.mtimeMs })));
+  for (const { abs, dir } of targets) {
+    await fs.promises.rm(abs, { force: true });
+    if (dir) await fs.promises.rm(dir, { recursive: true, force: true });
+    sessionCache.delete(abs);
+    fullCache.delete(abs);
+  }
+}
+
+/** $1 = transcript, $2 = its folder (or empty). */
+const REMOTE_DELETE_SCRIPT = 'rm -f -- "$1" || exit 1; if [ -n "$2" ]; then rm -rf -- "$2" || exit 1; fi';
+
+/** Delete one of an SSH host's conversations, by ID. */
+export async function deleteRemoteAgentSession(exec: RemoteExec, hostKey: string, agent: string, sessionId: string): Promise<void> {
+  if (!REMOTE_SOURCES[agent]) throw new Error("This agent's sessions cannot be deleted");
+  const targets = deletable(agent, sessionId, await listRemoteFiles(exec, agent));
+  for (const { abs, dir } of targets) {
+    await exec(REMOTE_DELETE_SCRIPT, [abs, dir ?? ""]);
+    sessionCache.delete(`${hostKey}\0${abs}`);
+  }
 }
 
 /**

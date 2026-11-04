@@ -38,6 +38,7 @@ import { AgentHistory } from "./AgentHistory";
 import { AgentUsage } from "./AgentUsage";
 import { PortForwardDialog } from "./PortForwardDialog";
 import { ProviderPane } from "./ProviderPane";
+import { SessionPickerButton } from "./SessionPicker";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
@@ -46,7 +47,6 @@ import {
   CloseIcon,
   ExternalOpenIcon,
   FilesIcon,
-  HistoryIcon,
   MaximizeIcon,
   PortForwardIcon,
   RestoreIcon,
@@ -279,7 +279,6 @@ function PaneViewSwitch({ leaf }: { leaf: Leaf }) {
   const choices = [
     { view: "terminal", icon: TerminalIcon },
     { view: "files", icon: FilesIcon },
-    { view: "history", icon: HistoryIcon },
   ] as const;
 
   return (
@@ -312,6 +311,7 @@ function PaneHeader({
   zen: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
 }) {
+  const { t } = useI18n();
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
@@ -330,7 +330,7 @@ function PaneHeader({
   // (renames instead) or an action button.
   const onHeaderDoubleClick = (e: React.MouseEvent) => {
     if (editing) return;
-    if ((e.target as HTMLElement).closest(".pane-head-title,.pane-head-actions")) return;
+    if ((e.target as HTMLElement).closest(".pane-head-title,.pane-head-actions,.pane-session-trigger")) return;
     toggleMaximize(leaf.id);
   };
 
@@ -353,7 +353,7 @@ function PaneHeader({
             paneId={leaf.id}
             currentTarget={leaf.sshTarget}
             currentLabel={leaf.sshLabel}
-            localLabel={/^pane \d+$/i.test(leaf.title.trim()) ? undefined : leaf.title}
+            localLabel={t("ssh.local")}
           />
         ) : editing ? (
           <input
@@ -378,6 +378,11 @@ function PaneHeader({
           <span className="pane-head-title" onDoubleClick={() => setEditing(true)}>
             {leaf.title}
           </span>
+        )}
+        {(leaf.view ?? "terminal") === "terminal" && (
+          // Only a tmux pane names its session; the attachment, and so the
+          // label, is cleared when the session ends.
+          <SessionPickerButton paneId={leaf.id} title={leaf.tmuxSession ? leaf.title : undefined} />
         )}
       </span>
       <span className="pane-head-spacer" />
@@ -489,7 +494,7 @@ function PaneSlot({
         ) : leaf.view === "providers" ? (
           <ProviderPane />
         ) : (
-          <TerminalPane id={leaf.id} sshTarget={leaf.sshTarget} />
+          <TerminalPane key={leaf.terminalRevision ?? 0} id={leaf.id} sshTarget={leaf.sshTarget} tmuxSession={leaf.tmuxSession} />
         )}
         {dropEdge && <div className={`drop-ind drop-ind-${dropEdge}`} />}
       </div>

@@ -1,6 +1,31 @@
 // English (source locale — every other dictionary falls back to this one)
 
 export default {
+  "sessions.title": "Sessions",
+  "sessions.running": "Running sessions",
+  "sessions.history": "Conversation history",
+  "sessions.new": "New session",
+  "sessions.openNewPane": "Open in new pane",
+  "sessions.switch": "Switch session",
+  "sessions.newAgent": "New {agent} session",
+
+  "sessions.error.sourceClosed": "The source pane has been closed.",
+  "sessions.error.paneChanged": "The pane changed while switching sessions. Please try again.",
+  "sessions.error.release": "Could not release the current terminal connection.",
+  "sessions.error.unsupportedAgent": "This agent cannot run as a session.",
+  "sessions.error.noAgent": "{agent} is not configured.",
+  "sessions.error.invalidId": "Invalid conversation ID.",
+  "sessions.error.unlinked": "A running {agent} session is not linked to a conversation yet, and this conversation was active in the last few minutes. Open it from Running sessions, or refresh once it has started.",
+
+  "tmux.refresh": "Refresh",
+  "tmux.windows": "{n} windows",
+  "tmux.attachedBadge": "Attached",
+  "tmux.agentSession": "{agent} session",
+  "tmux.end": "End session",
+  "tmux.endAttached": "Detach every terminal from this session before ending it.",
+  "tmux.empty": "No sessions are running on this host.",
+  "tmux.noRoom": "This tab has no room for another pane. The remote session is preserved.",
+
   "settings.title": "Settings",
   "settings.profile": "Profile",
   "profile.nickname": "Nickname",
@@ -13,7 +38,7 @@ export default {
   "settings.language.title": "LANGUAGE",
   "settings.language.label": "Interface language",
   "settings.rail.title": "RIGHT TOOLBAR",
-  "settings.rail.description": "Choose which pane shortcuts appear on the right side and in pane menus.",
+  "settings.rail.description": "Choose which pane shortcuts appear on the right side and in pane menus. History is only in pane menus; open the session picker from a pane's header.",
   "settings.rail.note": "The Settings button always stays visible.",
 
   "common.cancel": "Cancel",
@@ -269,7 +294,7 @@ export default {
   "pane.view.files": "Files",
   "pane.view.git": "Git diff",
   "pane.view.monitor": "Activity monitor",
-  "pane.view.history": "Session history",
+  "pane.view.history": "Sessions",
   "pane.view.usage": "Agent usage",
   "pane.view.providers": "Model gateway",
   "pane.openInBrowser": "Open {url} in browser",
@@ -358,7 +383,7 @@ export default {
   "kb.action.findNext": "Find next",
   "kb.action.findPrev": "Find previous",
   "kb.action.openThemePicker": "Open theme picker",
-  "kb.action.openAgentHistory": "Open agent session history",
+  "kb.action.openAgentHistory": "Open sessions",
   "kb.action.openAgentUsage": "Open agent token usage",
   "kb.action.openSystemMonitor": "Open system monitor",
 
@@ -485,7 +510,7 @@ export default {
   "action.findNext": "Find next",
   "action.findPrev": "Find previous",
   "action.openThemePicker": "Open theme picker",
-  "action.openAgentHistory": "Open agent session history",
+  "action.openAgentHistory": "Open sessions",
   "action.openAgentUsage": "Open agent token usage",
   "action.openSystemMonitor": "Open system monitor",
 
@@ -579,6 +604,9 @@ export default {
   "history.group.count": "{n} sessions",
   "history.badge.stale": "gone",
   "history.badge.staleTitle": "Folder no longer exists — resuming falls back to the repo root",
+  "history.delete": "Delete session",
+  "history.deleteConfirm": "Click again to delete this session — it can't be undone",
+  "history.deleteActive": "Active in the last 2 minutes — it may still be running",
   "history.emptyScoped": "No {agent} sessions here.",
   "history.tabHint": "Press Tab to search all sessions",
   "history.loadMore": "Load more",
