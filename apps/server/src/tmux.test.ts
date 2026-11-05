@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createTmux, killTmux, listTmux, tmuxAttachCommand, tmuxName, tmuxSessionCwd, parseTmuxSessions } from "./tmux.js";
+import { attachOnce, onAlternateScreen, skipWithoutTmux, withTmuxServer } from "./tmuxTestServer.js";
 
 test("tmux names reject control characters and ambiguous target separators", () => {
   for (const value of ["", "a:b", "a.b", "a\nb", null, 12]) assert.throws(() => tmuxName(value));
-  assert.equal(tmuxAttachCommand("work's $(echo unsafe)"), "exec tmux attach-session -t '=work'\\''s $(echo unsafe)'");
-  assert.equal(tmuxAttachCommand("work"), "exec tmux attach-session -t '=work'");
+  // The name reaches the script as an argument, never as script text.
+  assert.match(tmuxAttachCommand("work's $(echo unsafe)", 5),
+    / 'sh' '=work'\\''s \$\(echo unsafe\)' '=work'\\''s \$\(echo unsafe\):' '' '5'$/);
+  assert.match(tmuxAttachCommand("codex-1", 5), / 'sh' '=codex-1' '=codex-1:' '1' '5'$/);
+  // Each attach has its own slot.
+  assert.notEqual(tmuxAttachCommand("work"), tmuxAttachCommand("work"));
 });
 
 test("remote tmux operations preserve arguments and distinguish empty servers from errors", async () => {
@@ -77,38 +82,63 @@ esac
 
 // The fake tmux above only checks arguments; this runs the same operations on
 // a real, private tmux server, where target syntax actually matters.
-const hasTmux = (() => { try { execFileSync("tmux", ["-V"]); return true; } catch { return false; } })();
-test("remote tmux operations work against a real tmux server", { skip: !hasTmux && "tmux is not installed" }, async () => {
-  // tmux sockets are limited to ~100 characters, so keep the directory short.
-  const root = mkdtempSync(path.join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "tx-"));
-  const bin = path.join(root, "bin"); mkdirSync(bin);
-  writeFileSync(path.join(bin, "ssh"), '#!/bin/sh\nfor arg; do last=$arg; done\nexec /bin/sh -c "$last"\n', { mode: 0o755 });
-  const previous = { PATH: process.env.PATH, TMUX_TMPDIR: process.env.TMUX_TMPDIR, TMUX: process.env.TMUX, LC_ALL: process.env.LC_ALL };
-  process.env.PATH = `${bin}:${previous.PATH}`;
-  process.env.TMUX_TMPDIR = root;
-  // SSH logins often have no UTF-8 locale; tmux then rewrites control
-  // characters in its output, which once broke list parsing.
-  process.env.LC_ALL = "C";
-  delete process.env.TMUX;
+test("remote tmux operations work against a real tmux server", skipWithoutTmux, () => withTmuxServer(async (root) => {
   const conversationId = "12345678-1234-1234-1234-123456789012";
-  try {
-    await createTmux([], { name: "work", cwd: root, command: "sleep 60", agent: "claude", conversationId });
-    // A prefix of another session's name must not match it.
-    await createTmux([], { name: "work two", cwd: "/", command: "sleep 60" });
-    const work = (await listTmux([])).find(s => s.name === "work");
-    assert.equal(work?.windows, 1);
-    assert.equal(work?.agent, "claude");
-    assert.equal(work?.conversationId, conversationId);
-    assert.equal(await tmuxSessionCwd([], "work"), root);
-    await killTmux([], "work");
-    assert.deepEqual((await listTmux([])).map(s => s.name), ["work two"]);
-    await assert.rejects(killTmux([], "missing"), /can't find session|No such tmux session/);
-  } finally {
-    try { execFileSync("tmux", ["kill-server"]); } catch { /* already gone */ }
-    process.env.PATH = previous.PATH;
-    if (previous.TMUX_TMPDIR === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previous.TMUX_TMPDIR;
-    if (previous.TMUX !== undefined) process.env.TMUX = previous.TMUX;
-    if (previous.LC_ALL === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previous.LC_ALL;
-    rmSync(root, { recursive: true, force: true });
+  await createTmux([], { name: "work", cwd: root, command: "sleep 60", agent: "claude", conversationId });
+  // A prefix of another session's name must not match it.
+  await createTmux([], { name: "work two", cwd: "/", command: "sleep 60" });
+  const work = (await listTmux([])).find(s => s.name === "work");
+  assert.equal(work?.windows, 1);
+  assert.equal(work?.agent, "claude");
+  assert.equal(work?.conversationId, conversationId);
+  assert.equal(await tmuxSessionCwd([], "work"), root);
+  await killTmux([], "work");
+  assert.deepEqual((await listTmux([])).map(s => s.name), ["work two"]);
+  await assert.rejects(killTmux([], "missing"), /can't find session|No such tmux session/);
+}));
+
+test("only agent sessions attach on the normal screen, and only their own client", skipWithoutTmux, () => withTmuxServer(async () => {
+  const overrides = () => execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString();
+  await createTmux([], { name: "agent", cwd: "/", command: "sleep 60", agent: "codex" });
+  execFileSync("tmux", ["set-option", "-s", "terminal-overrides[0]", "mine:foo"]);
+  await createTmux([], { name: "plain", cwd: "/", command: "sleep 60" });
+  const agent = await attachOnce("agent", tmuxAttachCommand("agent"));
+  assert.ok(agent.includes("\x1b[?25h"), "the client drew the session");
+  assert.ok(!onAlternateScreen(agent));
+  assert.ok(onAlternateScreen(await attachOnce("plain", tmuxAttachCommand("plain"))));
+
+  // No other client attaches while the entry exists: under load, every
+  // Termany client is on the normal screen, and every other client is not.
+  const load = Array.from({ length: 8 }, (_, i) => i);
+  for (const i of load) {
+    await createTmux([], { name: `ours ${i}`, cwd: "/", command: "sleep 60", agent: "codex" });
+    await createTmux([], { name: `theirs ${i}`, cwd: "/", command: "sleep 60", agent: "codex" });
   }
-});
+  for (let round = 0; round < 3; round++) {
+    const [ours, theirs] = await Promise.all([
+      Promise.all(load.map(i => attachOnce(`ours ${i}`, tmuxAttachCommand(`ours ${i}`)))),
+      Promise.all(load.map(i => attachOnce(`theirs ${i}`, `exec tmux attach-session -t '=theirs ${i}'`))),
+    ]);
+    for (const client of ours) assert.ok(!onAlternateScreen(client));
+    for (const client of theirs) assert.ok(onAlternateScreen(client));
+  }
+
+  // A slot already in use is left as it is, and that client goes without.
+  execFileSync("tmux", ["set-option", "-s", "terminal-overrides[1000000]", "theirs:bar"]);
+  assert.ok(onAlternateScreen(await attachOnce("agent", tmuxAttachCommand("agent", 1_000_000))));
+  assert.equal(execFileSync("tmux", ["show-options", "-sv", "terminal-overrides[1000000]"]).toString(), "theirs:bar\n");
+  execFileSync("tmux", ["set-option", "-su", "terminal-overrides[1000000]"]);
+  assert.equal(overrides(), "terminal-overrides[0] mine:foo\n");
+}));
+
+test("an attach to a session that has ended never sets the entry", skipWithoutTmux, () => withTmuxServer(async (root) => {
+  // tmux skips the rest of a command after a failure, so an entry set before
+  // a failing attach would outlive it, for other clients to pick up.
+  const log = path.join(root, "set-option.log");
+  await createTmux([], { name: "keep", cwd: "/", command: "sleep 60" });
+  execFileSync("tmux", ["set-hook", "-g", "after-set-option", `run-shell 'echo set >> ${log}'`]);
+  assert.throws(() => execFileSync("/bin/sh", ["-c", tmuxAttachCommand("codex-ended")], { stdio: "pipe" }));
+  await new Promise((r) => setTimeout(r, 200)); // run-shell runs in the background
+  assert.equal(existsSync(log), false);
+  assert.equal(execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString(), "terminal-overrides\n");
+}));

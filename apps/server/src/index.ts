@@ -39,7 +39,8 @@ import {
   remoteUpload,
 } from "./remoteFs.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
-import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
+import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxPaneHistory, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
+import { TmuxScrollbackRestorer } from "./tmuxScrollback.js";
 import { bindHost, createRequestGuard, isLoopbackHost } from "./requestGuard.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -464,6 +465,21 @@ function attachTmuxAgent(sessionId: string, session: PtySession, tmuxSession: st
       })
       .catch(() => { /* no label: the pane simply shows no status until a task starts */ });
   });
+}
+
+function restoreTmuxScrollback(sessionId: string, session: PtySession, tmuxSession: string) {
+  const live = () => ptySessions.get(sessionId) === session;
+  const restorer = new TmuxScrollbackRestorer({
+    onNormalScreen: () => session.terminal.onNormalScreen(),
+    fetchHistory: async () => {
+      const args = sshPortForwarding.execArgs(sessionId);
+      return live() && args ? tmuxPaneHistory(args, tmuxSession) : null;
+    },
+    replaceScrollback: (history) => session.terminal.replaceScrollback(history),
+    replaced: () => { if (live() && isOpen(session.ws)) sendTerminalSnapshot(session, session.ws); },
+  });
+  session.pty.onData((data) => restorer.noteOutput(data));
+  session.pty.onExit(() => restorer.dispose());
 }
 
 /**
@@ -2433,7 +2449,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
   }
   if (sessionId) activityTracker.bindAgent(sessionId, agent);
   wireSession(sessionId ?? undefined, session);
-  if (sessionId && tmuxSession) attachTmuxAgent(sessionId, session, tmuxSession);
+  if (sessionId && tmuxSession) {
+    attachTmuxAgent(sessionId, session, tmuxSession);
+    restoreTmuxScrollback(sessionId, session, tmuxSession);
+  }
 
   pendingMessages.splice(0).forEach(applyClientMessage);
   if (url.searchParams.get("restore") === "1") sendTerminalSnapshot(session, ws);

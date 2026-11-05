@@ -1490,10 +1490,21 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     // Each connection starts with the server's complete screen. A replacement
     // snapshot supersedes queued output from the previous connection.
     pendingOutput.length = 0;
-    restoreTask = restoreTask.then(() => restoreTerminalSnapshot(term, snapshot, true));
+    // A mid-session snapshot only changes the scrollback (a tmux pane's), so
+    // keeping the distance from the bottom keeps the same text in view.
+    let fromBottom = 0;
+    restoreTask = restoreTask.then(() => {
+      fromBottom = term.buffer.active.baseY - term.buffer.active.viewportY;
+      return restoreTerminalSnapshot(term, snapshot, true);
+    });
     void restoreTask.then(() => {
       if (version !== restoreVersion || sessions.get(id) !== session) return;
       session.restoring = false;
+      if (fromBottom > 0) {
+        const line = Math.max(0, term.buffer.active.baseY - fromBottom);
+        term.scrollToLine(line);
+        if (session.lockedViewportY !== null) session.lockedViewportY = line;
+      }
       fitSession(id);
       for (const data of pendingOutput.splice(0)) writeSessionData(id, data);
     });

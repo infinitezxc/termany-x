@@ -96,3 +96,39 @@ test("the retained screen can answer cursor queries while the app is closed", as
   assert.deepEqual(replies, ["\x1b[5;7R"]);
   state.dispose();
 });
+
+test("replacing the scrollback keeps the screen, cursor and modes", async () => {
+  for (const historyRows of [0, 3, 30]) {
+    const state = new TerminalState();
+    const reopened = new xterm.Terminal({ allowProposedApi: true, scrollback: 5000 });
+    try {
+      state.resize(20, 6);
+      // What tmux drew: the scrollback missed most lines; the screen is live.
+      const drawn = "partial\r\n".repeat(8) + "\x1b[H\x1b[J\x1b[31mscreen 1\x1b[0m\r\nscreen 2\r\n\x1b[?2004h\x1b[?1h\x1b[1;5r\x1b[3;4H";
+      state.write(drawn);
+      const history = Array.from({ length: historyRows }, (_, i) => i === 0 ? "\x1b[32mgreen" : `line ${i}`).join("\n") + (historyRows ? "\n" : "");
+      assert.equal(await state.replaceScrollback(history), true);
+      await restoreTerminalSnapshot(reopened, await snapshot(state), true);
+      const view = screen(reopened);
+      assert.deepEqual(view.lines.slice(0, historyRows), history.split("\n").slice(0, historyRows).map((l) => l.replace(/\x1b\[\d+m/g, "")));
+      assert.deepEqual(view.lines.slice(historyRows), ["screen 1", "screen 2", "", "", "", ""]);
+      assert.equal(view.baseY, historyRows);
+      assert.deepEqual([view.cursorX, view.cursorY], [3, 2]);
+      assert.equal(reopened.modes.bracketedPasteMode, true);
+      assert.equal(reopened.modes.applicationCursorKeysMode, true);
+      assert.equal(reopened.buffer.active.getLine(historyRows)?.getCell(0)?.getFgColor(), 1);
+      // The scroll region survives: a linefeed at its bottom stays on row 5.
+      await write(reopened, "\x1b[5;1H\nnew");
+      assert.deepEqual(screen(reopened).lines.slice(-2), ["new", ""]);
+    } finally { state.dispose(); reopened.dispose(); }
+  }
+});
+
+test("the alternate screen keeps its scrollback", async () => {
+  const state = new TerminalState();
+  try {
+    state.write("\x1b[?1049hfull screen");
+    assert.equal(await state.replaceScrollback("history\n"), false);
+    assert.match((await snapshot(state)).data, /full screen/);
+  } finally { state.dispose(); }
+});

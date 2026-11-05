@@ -1,4 +1,5 @@
 import { parseIdentityOutput, TMUX_IDENTITY_SCRIPT, transcriptIdentity } from "./tmuxIdentity.js";
+import { randomInt } from "node:crypto";
 import { remoteSh } from "./remoteFs.js";
 import { shellQuote } from "./remoteCommand.js";
 import { remoteAgentSessionsById } from "./agentSessions.js";
@@ -47,8 +48,36 @@ export function tmuxName(value: unknown): string {
 const sessionTarget = (name: string) => `=${tmuxName(name)}`;
 const paneTarget = (name: string) => `${sessionTarget(name)}:`;
 
-export function tmuxAttachCommand(name: string): string {
-  return `exec tmux attach-session -t ${shellQuote(sessionTarget(name))}`;
+/**
+ * Agent sessions attach drawn on the browser terminal's normal screen, so
+ * output tmux scrolls off lands in xterm's scrollback (the alternate screen
+ * has none: the wheel becomes arrow keys). `indn@` keeps tmux scrolling with
+ * linefeeds, which xterm keeps; it drops lines scrolled by `CSI n S`. Other
+ * sessions keep the alternate screen for full-screen programs.
+ *
+ * tmux reads overrides only when a client attaches, and runs one command's
+ * parts back to back, so setting the entry, attaching and removing it in one
+ * command keeps every other client from seeing it. has-session goes first
+ * because tmux skips the rest of a command after a failure. The index is
+ * random and well below 2^32, where tmux wraps to the user's low indexes; one
+ * in use is left alone. Old tmux fails the check and attaches as before.
+ *
+ * $1 session target, $2 pane target, $3 set for a legacy agent name, $4 index.
+ * One line: csh-family shells reject newlines inside quotes.
+ */
+const ATTACH_SCRIPT = [
+  `slot="terminal-overrides[$4]"; o='*:smcup@:rmcup@:indn@'`,
+  `if [ -z "$3" ] && [ -z "$(tmux display-message -p -t "$2" '#{@termany-agent}' 2>/dev/null)" ]; then exec tmux attach-session -t "$1"; fi`,
+  `v=$(tmux show-options -sv "$slot" 2>/dev/null) && [ -z "$v" ] || exec tmux attach-session -t "$1"`,
+  `tmux has-session -t "$1" \\; set-option -s "$slot" "$o" \\; attach-session -t "$1" \\; set-option -su "$slot"; s=$?`,
+  `[ "$(tmux show-options -sv "$slot" 2>/dev/null)" = "$o" ] && tmux set-option -su "$slot"`,
+  `exit "$s"`,
+].join("; ");
+
+/** The command an SSH pane runs on the host to attach to a session. */
+export function tmuxAttachCommand(name: string, slot = randomInt(1_000_000, 2_000_000_000)): string {
+  const args = [ATTACH_SCRIPT, "sh", sessionTarget(name), paneTarget(name), legacyAgent(name) ? "1" : "", String(slot)];
+  return `exec sh -c ${args.map(shellQuote).join(" ")}`;
 }
 export function parseTmuxSessions(output: string): TmuxSession[] {
   return output.trimEnd().split("\n").filter(Boolean).map(line => {
@@ -147,6 +176,22 @@ export async function createTmux(args: string[], input: { name: unknown; cwd?: u
 export async function killTmux(args: string[], name: unknown) {
   const session = tmuxName(name);
   await remoteSh(args, KILL_SCRIPT, [sessionTarget(session), paneTarget(session)]);
+}
+
+/**
+ * A single-pane session's history, escape-coded with wrapped lines joined, or
+ * null for a split window, whose pane is narrower than the client. With no
+ * history, `-E -1` would yield the screen, so it is not asked.
+ */
+const HISTORY_SCRIPT = CHECK +
+  `info=$(tmux display-message -p -t "$1" '#{window_panes}:#{history_size}') || exit 1; ` +
+  'case "$info" in 1:0) exit 0;; 1:*) ;; *) echo split; exit 0;; esac; ' +
+  'printf "full\\n"; exec tmux capture-pane -p -e -J -S - -E -1 -t "$1"';
+
+export async function tmuxPaneHistory(args: string[], name: string): Promise<string | null> {
+  const output = (await remoteSh(args, HISTORY_SCRIPT, [paneTarget(name)])).toString("utf8");
+  if (output.startsWith("split")) return null;
+  return output.startsWith("full\n") ? output.slice(5) : "";
 }
 
 /** The agent a tmux session was started for: its label, else an older release's name. */
