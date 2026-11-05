@@ -385,7 +385,8 @@ function PaneHeader({
           // label, is cleared when the session ends.
           <>
             <NewSessionButtons paneId={leaf.id} />
-            <SessionPickerButton paneId={leaf.id} title={leaf.tmuxSession ? leaf.title : undefined} />
+            <SessionPickerButton paneId={leaf.id} sshTarget={leaf.sshTarget} tmuxSession={leaf.tmuxSession}
+              title={leaf.tmuxSession ? leaf.title : undefined} />
           </>
         )}
       </span>

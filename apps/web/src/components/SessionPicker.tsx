@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useId, useRef, useState, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
+import { usePaneSessionTitle } from "../usePaneSessionTitle";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { AgentHistory } from "./AgentHistory";
 import { HistoryIcon } from "./icons";
 import "./SessionPicker.css";
 
-/** Opens the session picker for a pane: choosing a session shows it in that pane. */
-export function SessionPickerButton({ paneId, title }: { paneId: string; title?: string }) {
+/**
+ * Opens the session picker for a pane: choosing a session shows it in that pane.
+ * A tmux pane is labelled with its session's title, kept current as the agent names it.
+ */
+export function SessionPickerButton({ paneId, sshTarget, tmuxSession, title }: {
+  paneId: string; sshTarget?: string; tmuxSession?: string; title?: string;
+}) {
   const { t } = useI18n();
+  usePaneSessionTitle(paneId, sshTarget, tmuxSession);
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   return <><button className="pane-session-trigger" title={t("sessions.switch")}
