@@ -1561,6 +1561,25 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     // returning false skips xterm's encoding entirely, and send the same
     // ESC CR bytes Option+Enter already produces (see shiftEnter.ts).
     // Runs AFTER the shortcut loop so a user rebind of Shift+Enter still wins.
+    // Backspace/Delete over a selection in the line being typed deletes the
+    // selection, as ⌘X does without copying. Apps that draw their own
+    // selection (Claude Code) already do this; Codex leaves selection to the
+    // terminal and would just delete the character at its cursor.
+    if (
+      (event.key === "Backspace" || event.key === "Delete") &&
+      !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+      term.hasSelection()
+    ) {
+      const range = term.getSelectionPosition();
+      const keys = range && cutKeystrokes(term.buffer.active, range);
+      if (keys) {
+        event.preventDefault();
+        event.stopPropagation();
+        term.clearSelection();
+        term.input(keys);
+        return false;
+      }
+    }
     if (isShiftEnterNewline(event)) {
       // Returning false alone only skips xterm's encoding; without
       // preventDefault the keystroke would also land in xterm's hidden
