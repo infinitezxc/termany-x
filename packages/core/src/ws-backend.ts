@@ -1,4 +1,4 @@
-import { parseShellExit, type ClientMessage, type ITerminalBackend, type ShellExit, type TerminalSnapshot } from "./backend.js";
+import { DISPLACED_CLOSE_CODE, parseShellExit, type ClientMessage, type ExitDetail, type ITerminalBackend, type ShellExit, type TerminalSnapshot } from "./backend.js";
 
 // The bundled server boots in parallel with the webview and can lose the race
 // by a few hundred ms — retry the INITIAL connection instead of declaring the
@@ -27,7 +27,7 @@ export class WebSocketBackend implements ITerminalBackend {
   private outbox: string[] = [];
   private dataCb?: (data: string) => void;
   private restoreCb?: (snapshot: TerminalSnapshot) => void;
-  private exitCb?: (reason?: string, exit?: ShellExit) => void;
+  private exitCb?: (reason?: string, exit?: ShellExit, detail?: ExitDetail) => void;
 
   constructor(url: string, params?: Record<string, string | undefined>) {
     const wsUrl = new URL(url);
@@ -73,6 +73,10 @@ export class WebSocketBackend implements ITerminalBackend {
       // stamps the frame with how the shell died when it knows; anything else
       // (its own shutdown, a newer connection displacing us) arrives without a
       // payload and stays "unknown" to the caller.
+      if (event.code === DISPLACED_CLOSE_CODE) {
+        this.exitCb?.(undefined, undefined, { displaced: true });
+        return;
+      }
       this.exitCb?.(undefined, parseShellExit(event.code, event.reason));
     };
   }
@@ -85,7 +89,7 @@ export class WebSocketBackend implements ITerminalBackend {
     this.restoreCb = cb;
   }
 
-  onExit(cb: (reason?: string, exit?: ShellExit) => void) {
+  onExit(cb: (reason?: string, exit?: ShellExit, detail?: ExitDetail) => void) {
     this.exitCb = cb;
   }
 

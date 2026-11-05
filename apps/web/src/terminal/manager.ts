@@ -83,6 +83,12 @@ export interface Session {
   ended: boolean;
   /** Start a replacement backend after an ended remote session is selected. */
   restart?: () => void;
+  /** Pending automatic reattach of a tmux session whose SSH link dropped. */
+  reconnectTimer: number | null;
+  /** Consecutive automatic reattach attempts, for backoff. */
+  reconnectAttempts: number;
+  /** Sized by prestartSession before the terminal opened. */
+  presized: boolean;
   connectionState?: "connecting" | "connected" | "disconnected";
   /** Increments for every PTY output chunk, including in-place TUI redraws. */
   contentVersion: number;
@@ -274,6 +280,26 @@ export function terminalSessionId(paneId: string, sshTarget?: string): string {
 /** Accept a pane id from app actions or an already-resolved runtime id. */
 function activeSessionId(id: string): string {
   return activeSessionByPane.get(id) ?? id;
+}
+
+/**
+ * The runtime session a layout leaf names for activity lookups. A pane this
+ * window has not attached yet (a page another window holds, a tmux pane still
+ * waiting for its prestart) has no entry in activeSessionByPane, so derive the
+ * id its connection uses rather than looking it up under the bare pane id.
+ */
+export function paneActivityId(paneId: string, sshTarget?: string): string {
+  return activeSessionByPane.get(paneId) ?? terminalSessionId(paneId, sshTarget);
+}
+
+/** Point a pane at a session; activity views resolve panes through this map. */
+function setActiveSession(paneId: string, id: string) {
+  if (activeSessionByPane.get(paneId) === id) return;
+  activeSessionByPane.set(paneId, id);
+  // Activity snapshots are keyed by session id. The server sends nothing when
+  // a pane maps onto a session it already tracks (a reattach after reopening
+  // Termany), so subscribers must re-resolve now or keep showing it inactive.
+  notifyAgentActivity();
 }
 
 export type AgentActivityStatus = "working" | "done" | "error";
@@ -1406,6 +1432,77 @@ function installStuckDragGuard() {
   );
 }
 
+/** A tmux attach that lasted this long counts as having reconnected. */
+const TMUX_RECONNECT_HEALTHY_MS = 30_000;
+const TMUX_RECONNECT_BASE_MS = 2_000;
+const TMUX_RECONNECT_MAX_MS = 30_000;
+
+/** Reattach an ended tmux session after a backoff; network recovery skips the wait. */
+function scheduleTmuxReconnect(session: Session) {
+  if (session.reconnectTimer !== null) window.clearTimeout(session.reconnectTimer);
+  const delay = Math.min(TMUX_RECONNECT_MAX_MS, TMUX_RECONNECT_BASE_MS * 2 ** session.reconnectAttempts);
+  session.reconnectAttempts++;
+  session.reconnectTimer = window.setTimeout(() => {
+    session.reconnectTimer = null;
+    session.restart?.();
+  }, delay);
+  installOnlineReconnect();
+}
+
+let onlineReconnectInstalled = false;
+function installOnlineReconnect() {
+  if (onlineReconnectInstalled) return;
+  onlineReconnectInstalled = true;
+  window.addEventListener("online", () => {
+    for (const session of sessions.values()) {
+      if (session.reconnectTimer === null) continue;
+      session.reconnectAttempts = 0;
+      session.restart?.();
+    }
+  });
+}
+
+/**
+ * Connect a tmux pane that is not on screen yet, so its session is attached
+ * (and its agent tracked) before the user visits it. The terminal opens into
+ * the DOM later, on the normal attachSession() path. `size` seeds the PTY so
+ * attaching does not shrink the tmux window to 80x24 for other clients.
+ */
+export function prestartSession(
+  paneId: string,
+  options: { sshTarget: string; tmuxSession: string; cwdFrom?: string[]; size?: { cols: number; rows: number } },
+) {
+  const id = terminalSessionId(paneId, options.sshTarget);
+  if (sessions.has(id) || activeSessionByPane.has(paneId)) return;
+  setActiveSession(paneId, id);
+  let owned = sessionIdsByPane.get(paneId);
+  if (!owned) {
+    owned = new Set();
+    sessionIdsByPane.set(paneId, owned);
+  }
+  owned.add(id);
+  const s = getSession(id, options.cwdFrom, options.sshTarget, paneId, options.tmuxSession);
+  if (options.size && !s.opened) {
+    const cols = Math.max(20, options.size.cols);
+    const rows = Math.max(5, options.size.rows);
+    s.term.resize(cols, rows);
+    s.backend.resize(cols, rows);
+    s.presized = true;
+  }
+}
+
+/** One character cell of an on-screen terminal, in CSS pixels. */
+export function measuredCellSize(): { width: number; height: number } | undefined {
+  for (const s of sessions.values()) {
+    if (!s.opened || !s.el.isConnected) continue;
+    const cell = (s.term as unknown as {
+      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
+    })._core?._renderService?.dimensions?.css?.cell;
+    if (cell && cell.width > 0 && cell.height > 0) return { width: cell.width, height: cell.height };
+  }
+  return undefined;
+}
+
 function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id, tmuxSession?: string): Session {
   installStuckDragGuard();
   const existing = sessions.get(id);
@@ -1576,6 +1673,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     deferredFlushTimer: null,
     spawnedAt: Date.now(),
     restartAttempts: 0,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    presized: false,
     ended: false,
     connectionState: sshTarget ? "connecting" : undefined,
     contentVersion: 0,
@@ -1620,7 +1720,8 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       writeSessionData(id, data);
     });
-    b.onExit((reason, exit) => {
+    b.onExit((reason, exit, detail) => {
+      if (session.backend !== b) return;
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
       if (sshTarget) {
         session.ended = true;
@@ -1628,12 +1729,20 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         notifyConnectionStatus();
         // A clean tmux exit returns to the host shell; a plain SSH exit goes
         // local. A dropped link keeps its destination and waits for Enter.
-        if (!reason && sshExitDisposition(exit) === "go-local") {
+        if (!reason && !detail?.displaced && sshExitDisposition(exit) === "go-local") {
           window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId, sshTarget, tmuxSession } }));
           return;
         }
-        const message = translate(getLanguage(), reason ? "ssh.sessionError" : "ssh.sessionEnded", reason ? { reason } : undefined);
-        term.write(`\r\n\x1b[2m[${message}]\x1b[0m\r\n`);
+        // A tmux session outlives the link, so reattach it on our own. Not
+        // when another connection displaced this one: that client owns it now.
+        const retrying = tmuxSession && !detail?.displaced;
+        if (retrying && Date.now() - session.spawnedAt > TMUX_RECONNECT_HEALTHY_MS) session.reconnectAttempts = 0;
+        // Each failed retry would print the same line; say it once per outage.
+        if (!retrying || session.reconnectAttempts === 0) {
+          const message = translate(getLanguage(), reason ? "ssh.sessionError" : "ssh.sessionEnded", reason ? { reason } : undefined);
+          term.write(`\r\n\x1b[2m[${message}]\x1b[0m\r\n`);
+        }
+        if (retrying) scheduleTmuxReconnect(session);
         return;
       }
       // A truthy reason means the WebSocket itself couldn't connect, which
@@ -1674,12 +1783,14 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     // taller. With no layout change, ResizeObserver will never send a resize.
     // Seed every replacement connection, including detached/background panes,
     // with the last fitted grid; WebSocketBackend queues it until open.
-    if (session.opened) b.resize(term.cols, term.rows);
+    if (session.opened || session.presized) b.resize(term.cols, term.rows);
   };
   wireBackend(initialBackend);
 
   session.restart = () => {
     if (!session.ended) return;
+    if (session.reconnectTimer !== null) window.clearTimeout(session.reconnectTimer);
+    session.reconnectTimer = null;
     session.ended = false;
     session.connectionState = "connecting";
     notifyConnectionStatus();
@@ -1967,7 +2078,7 @@ export function attachSession(
   paneId = id,
   tmuxSession?: string,
 ) {
-  activeSessionByPane.set(paneId, id);
+  setActiveSession(paneId, id);
   let owned = sessionIdsByPane.get(paneId);
   if (!owned) {
     owned = new Set();
@@ -2383,6 +2494,7 @@ function sessionCursorLine(id: string): string {
 export function disposeSession(id: string) {
   const s = sessions.get(id);
   if (s) {
+    if (s.reconnectTimer !== null) window.clearTimeout(s.reconnectTimer);
     s.backend.dispose();
     s.term.dispose();
     s.el.remove();
@@ -2430,6 +2542,7 @@ export function disposePaneSessions(paneId: string) {
   for (const id of ids) {
     const s = sessions.get(id);
     if (s) {
+      if (s.reconnectTimer !== null) window.clearTimeout(s.reconnectTimer);
       s.backend.dispose();
       s.term.dispose();
       s.el.remove();

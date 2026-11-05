@@ -31,9 +31,11 @@ export interface ITerminalBackend {
   /**
    * Register a callback for when the underlying session ends. `reason` is set
    * only when the transport itself failed; `exit` carries how the shell ended
-   * when the backend could observe it (see ShellExit).
+   * when the backend could observe it (see ShellExit). `detail.displaced`
+   * marks a connection the server closed because a newer one took the
+   * session over: the shell is still running, just not for this client.
    */
-  onExit(cb: (reason?: string, exit?: ShellExit) => void): void;
+  onExit(cb: (reason?: string, exit?: ShellExit, detail?: ExitDetail) => void): void;
   /** Tear down the connection / session. */
   dispose(): void;
 }
@@ -67,6 +69,19 @@ export interface ShellExit {
  * point: only THIS code means "the shell ended and here is how".
  */
 export const SHELL_EXIT_CLOSE_CODE = 4000;
+
+/** Extra facts about why a backend ended, beyond the shell's own exit. */
+export interface ExitDetail {
+  displaced?: boolean;
+}
+
+/**
+ * Close code the server stamps on a socket it drops because a newer
+ * connection reattached to the same session (another window, a reload).
+ * Clients must not reconnect on it, or two of them would take turns
+ * stealing the session from each other.
+ */
+export const DISPLACED_CLOSE_CODE = 4001;
 
 /** Serialize a ShellExit for the CLOSE frame's reason field. */
 export function encodeShellExit(exit: ShellExit): string {

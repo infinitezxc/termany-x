@@ -13,6 +13,7 @@ import {
   agentActivitySnapshot,
   agentActivityTitle,
   hasActiveAgentSession,
+  paneActivityId,
   subscribeAgentActivity,
   type AgentActivityStatus,
 } from "../terminal/manager";
@@ -28,8 +29,9 @@ const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 type TreeDropPos = "into" | "before" | "after";
 type NodeDragUi = { id: string; targetId: string | null; pos: TreeDropPos | null; overTree: boolean };
 
+/** Each leaf's runtime session id, which is what agent activity is keyed by. */
 function paneLeafIds(pane: TreeNode["htabs"][number]["layout"]): string[] {
-  return pane.kind === "leaf" ? [pane.id] : pane.children.flatMap(paneLeafIds);
+  return pane.kind === "leaf" ? [paneActivityId(pane.id, pane.sshTarget)] : pane.children.flatMap(paneLeafIds);
 }
 
 function subtreeLeafIds(node: TreeNode): string[] {

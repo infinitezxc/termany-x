@@ -4,6 +4,7 @@ import { App } from "./App";
 import { isDemo } from "./demo";
 import { isTauri } from "./env";
 import { loadState, startStateSync, waitForServer } from "./state/sync";
+import { prestartTmuxPanes } from "./tmuxPrestart";
 import { useStore } from "./state/store";
 import { revealWindow } from "./state/windows";
 import "./styles.css";
@@ -70,5 +71,6 @@ waitForServer().then(() =>
     // Extra windows are created hidden so they never appear as an empty
     // transparent rectangle in front of everything — see revealWindow.
     revealWindow();
+    void prestartTmuxPanes();
   })
 );

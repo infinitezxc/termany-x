@@ -265,6 +265,8 @@ type ClientMessage =
 // and the CLOSE frame is the only channel that can't be confused with terminal
 // output. 4000-4999 is WebSocket's private-use close-code range.
 const SHELL_EXIT_CLOSE_CODE = 4000;
+/** Mirrors @termany/core's DISPLACED_CLOSE_CODE: a newer connection took this session. */
+const DISPLACED_CLOSE_CODE = 4001;
 
 function encodeShellExit(exitCode: number, signal: number | undefined): string {
   return JSON.stringify({ exitCode, signal: signal ?? 0 });
@@ -2257,7 +2259,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     activityTracker.bindAgent(sessionId!, agent);
     if (existing.ws && existing.ws !== ws) {
       try {
-        existing.ws.close();
+        existing.ws.close(DISPLACED_CLOSE_CODE, "displaced");
       } catch {
         /* already closing */
       }
@@ -2396,8 +2398,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
       }
       // A tmux pane attaches directly: the session keeps its own directory, and
       // its foreground process is tmux rather than the login shell to track.
+      // Keepalives make a dead link end ssh (status 255) within ~45s instead
+      // of hanging on TCP, so the browser can reattach the session.
       sshArgs = tmuxSession
-        ? ["-t", ...sshArgs, tmuxAttachCommand(tmuxSession)]
+        ? ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-t", ...sshArgs, tmuxAttachCommand(tmuxSession)]
         : sshInteractiveArgsForConnection(sshTarget, sshArgs, true);
     }
   } catch (err) {
