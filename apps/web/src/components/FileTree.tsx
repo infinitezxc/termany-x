@@ -2,7 +2,7 @@ import { textInputProps } from "../textInputProps";
 import { findNext, findPrevious, openSearchPanel } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CodeEditor } from "./CodeEditor";
+import { CodeEditor, type EditorSnapshot } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
@@ -873,6 +873,8 @@ function FilePreview({
   treeCollapsed,
   onToggleTree,
   onDirtyChange,
+  isDirty,
+  draftKey,
   onReload,
   onClose,
   closeArmed,
@@ -892,6 +894,11 @@ function FilePreview({
   treeCollapsed: boolean;
   onToggleTree: () => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  /** Whether `path` has unsaved edits right now — read live, not from the
+   *  last render. */
+  isDirty: (path: string) => boolean;
+  /** Which pane + host the drafts are kept under (the stateCache key). */
+  draftKey: string;
   /** Re-read the file from disk; `force` throws away unsaved edits. */
   onReload: (force: boolean) => void;
   /** Close every tab. Armed = asked once already, because some have unsaved edits. */
@@ -901,6 +908,23 @@ function FilePreview({
   // Unsaved-edit state lives with the tab strip, which marks the tab.
   const setDirty = useCallback((value: boolean) => onDirtyChange(selected.path, value), [onDirtyChange, selected.path]);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Unsaved edits outlive the editor: when it goes away with any (the pane
+  // flips to its terminal, the page switches, a maximize remounts it, a
+  // Markdown file flips to its rendered view), its whole state is kept in
+  // memory and the next editor for this file resumes from it. Only explicit
+  // discards — closing the tab, close all, force reload — drop a draft.
+  const takeRestore = useCallback(() => takeDraft(draftKey, selected.path), [draftKey, selected.path]);
+  const keepDraft = useCallback((snapshot: EditorSnapshot) => {
+    if (isDirty(selected.path)) putDraft(draftKey, selected.path, snapshot);
+  }, [draftKey, isDirty, selected.path]);
+  const [showSource, setShowSource] = useState(false);
+  // A draft is source edits — reopen on the source, not a rendered view.
+  // Checked once mounted: on a remount, the old editor only hands its draft
+  // over after this one's render.
+  useEffect(() => {
+    if (drafts.get(draftKey)?.has(selected.path)) setShowSource(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- on mount only
+  }, []);
   // A hidden tab stays mounted — don't let its video or audio keep playing.
   useEffect(() => {
     if (visible) return;
@@ -908,7 +932,6 @@ function FilePreview({
   }, [visible]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
-  const [showSource, setShowSource] = useState(false);
   const [reloadArmed, setReloadArmed] = useState(false);
   useEffect(() => {
     if (!dirty) setReloadArmed(false);
@@ -1004,6 +1027,9 @@ function FilePreview({
             return;
           }
           setReloadArmed(false);
+          // Discarding means the kept draft too, editor shown or not.
+          takeDraft(draftKey, selected.path);
+          if (!editorView()) setDirty(false);
           onReload(true);
         }}
         onMouseLeave={() => setReloadArmed(false)}
@@ -1134,6 +1160,8 @@ function FilePreview({
           readOnly={!!selected.truncated}
           onDirtyChange={setDirty}
           onSave={(text) => save(selected.path, text)}
+          takeRestore={takeRestore}
+          onUnmount={keepDraft}
         />
       )}
     </div>
@@ -1173,6 +1201,28 @@ function emptyFileTreeState(): FileTreeState {
  * we left off" and no entry means "resolve the root from the live cwd".
  */
 const stateCache = new Map<string, FileTreeState>();
+
+/**
+ * Unsaved editors whose editor has gone away, by stateCache key and then
+ * file path — see FilePreview. Kept apart from stateCache because leaving
+ * files view forgets that one, and must not forget unsaved edits with it.
+ */
+const drafts = new Map<string, Map<string, EditorSnapshot>>();
+
+function putDraft(key: string, path: string, snapshot: EditorSnapshot) {
+  let byPath = drafts.get(key);
+  if (!byPath) drafts.set(key, (byPath = new Map()));
+  byPath.set(path, snapshot);
+}
+
+/** Remove and return the draft for `path`, if any. */
+function takeDraft(key: string, path: string): EditorSnapshot | undefined {
+  const byPath = drafts.get(key);
+  const snapshot = byPath?.get(path);
+  byPath?.delete(path);
+  if (byPath && !byPath.size) drafts.delete(key);
+  return snapshot;
+}
 
 /**
  * A pane's alternative body: browse the filesystem rooted at `sessionId`'s
@@ -1305,6 +1355,23 @@ function FileTreeView({
         const msg = e instanceof Error ? e.message : String(e);
         setDirs((d) => ({ ...d, [path]: { status: "error", error: msg } }));
       });
+  }, [remote]);
+
+  // Re-list a directory in place for a background refresh: unlike loadDir
+  // it never shows "loading" (no flicker), skips the update when nothing
+  // changed, and keeps what's shown if the request fails.
+  const relistDir = useCallback((path: string) => {
+    fetch(fsUrl("list", { path }, remote))
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+        setDirs((d) => {
+          const prev = d[path];
+          if (prev?.status === "loaded" && JSON.stringify(prev.entries) === JSON.stringify(body.entries)) return d;
+          return { ...d, [path]: { status: "loaded", entries: body.entries } };
+        });
+      })
+      .catch(() => {});
   }, [remote]);
 
   // A genuinely new navigation (the address bar, below) — resets the tree,
@@ -1450,7 +1517,20 @@ function FileTreeView({
       const htab = activeHtab(useStore.getState());
       const leaf = htab && findLeaf(htab.layout, sessionId);
       if (!leaf || leaf.view === "files") return;
-      stateCache.delete(cacheKey);
+      // Files with unsaved edits stay open (their edits are kept as drafts —
+      // see FilePreview), so coming back shows them; everything else starts
+      // over from the shell's cwd.
+      const unsaved = (stateCache.get(cacheKey)?.tabs ?? []).filter((t) => dirtyRef.current.has(t.path));
+      if (unsaved.length) {
+        const active = stateCache.get(cacheKey)?.activePath;
+        stateCache.set(cacheKey, {
+          ...emptyFileTreeState(),
+          tabs: unsaved,
+          activePath: unsaved.some((t) => t.path === active) ? active! : unsaved[0].path,
+        });
+      } else {
+        stateCache.delete(cacheKey);
+      }
       // A remote path only means something to that host's shell, so only `cd`
       // when the tree was browsing this very pane's own connection.
       if (remote && remote !== terminalSessionId(sessionId, leaf.sshTarget)) return;
@@ -1489,6 +1569,7 @@ function FileTreeView({
     const nextTabs = tabs.filter((t) => t.path !== path);
     const nextActive = path === activePath ? (nextTabs[i] ?? nextTabs[i - 1])?.path ?? null : activePath;
     markDirty(path, false);
+    takeDraft(cacheKey, path);
     commitTabs(nextTabs, nextActive);
   };
 
@@ -1498,6 +1579,7 @@ function FileTreeView({
       return;
     }
     setDirtyPaths(new Set());
+    drafts.delete(cacheKey);
     commitTabs([], null);
   };
 
@@ -1535,6 +1617,7 @@ function FileTreeView({
   tabsRef.current = tabs;
   const dirtyRef = useRef(dirtyPaths);
   dirtyRef.current = dirtyPaths;
+  const isDirtyNow = useCallback((path: string) => dirtyRef.current.has(path), []);
   const reloadTab = useCallback((path: string, force = false) => {
     if (!force && dirtyRef.current.has(path)) return;
     void readFile(path, remote).then((result) => {
@@ -1876,15 +1959,120 @@ function FileTreeView({
     </>
   );
 
-  // Keep the file on screen current with the disk: check it whenever it's
-  // shown (tab switch, the window coming back to the front) and, for a local
-  // file, every couple of seconds by its modified time — a cheap stat. A
-  // remote file costs a full read over SSH, so it isn't polled. Unsaved edits
-  // are never overwritten by this.
+  // Keep the tree current with the disk too: while it's on screen, the
+  // server watches every directory it shows — the root and each expanded
+  // folder — over one stream (/api/fs/watch-dirs; one SSH channel for a
+  // remote tree) and names each one whose listing changes, which is then
+  // re-listed in place. Expanding or collapsing replaces the stream, and the
+  // old one stays open until the new one is ready, so nothing slips through
+  // the switch; only directories it didn't already cover get re-listed then.
+  // That handover is bounded: a remote host's stream slots can all be taken
+  // (the old stream holding one of them), so if the new one isn't ready
+  // soon, the old one is let go and everything is re-listed once it is.
+  // A reconnect, or the window coming back, re-lists everything.
+  const treeShown = !!root && (!tabs.length || (narrow ? narrowTree : !treeCollapsed));
+  const watchKey = treeShown
+    ? [root!, ...[...expanded].filter((p) => p !== root).sort()].slice(0, 256).join("\0")
+    : "";
+  const dirWatch = useRef<{ es: EventSource; dirs: Set<string>; live: boolean } | null>(null);
+  useEffect(() => {
+    const closeCurrent = () => {
+      dirWatch.current?.es.close();
+      dirWatch.current = null;
+    };
+    if (!watchKey || typeof EventSource === "undefined") {
+      closeCurrent();
+      return;
+    }
+    const list = watchKey.split("\0");
+    let pending: EventSource | null = null;
+    let timer: number | undefined;
+    // This run was superseded: a stream it opened may still be the live one
+    // for a moment, but must not reconnect with this run's (stale) list.
+    let disposed = false;
+    let handover: number | undefined;
+    const open = () => {
+      if (disposed || document.hidden || pending) return;
+      const params = new URLSearchParams();
+      list.forEach((dir) => params.append("path", dir));
+      if (remote) params.set("session", remote);
+      const es = new EventSource(`${apiUrl()}/api/fs/watch-dirs?${params}`);
+      pending = es;
+      let firstReady = true;
+      window.clearTimeout(handover);
+      handover = window.setTimeout(() => {
+        const prev = dirWatch.current;
+        if (pending !== es || !prev || prev.es === es) return;
+        prev.es.close();
+        dirWatch.current = null;
+      }, 2_000);
+      es.addEventListener("ready", () => {
+        window.clearTimeout(handover);
+        const prev = dirWatch.current;
+        // Covered all along only by a live predecessor; this stream's own
+        // reconnect covered nothing in between.
+        const covered = firstReady && prev?.live && prev.es !== es ? prev.dirs : new Set<string>();
+        list.forEach((dir) => covered.has(dir) || relistDir(dir));
+        if (prev && prev.es !== es) prev.es.close();
+        firstReady = false;
+        pending = null;
+        dirWatch.current = { es, dirs: new Set(list), live: true };
+      });
+      es.addEventListener("change", (event) => {
+        const dir = JSON.parse((event as MessageEvent<string>).data) as string;
+        if (list.includes(dir)) relistDir(dir);
+      });
+      es.onerror = () => {
+        if (dirWatch.current?.es === es) dirWatch.current.live = false;
+        // EventSource retries a dropped stream itself, but gives up on an
+        // error response — try again later rather than never.
+        if (es.readyState === EventSource.CLOSED) {
+          if (pending === es) pending = null;
+          if (dirWatch.current?.es === es) dirWatch.current = null;
+          if (!disposed) timer = window.setTimeout(open, 10_000);
+        }
+      };
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        pending?.close();
+        pending = null;
+        closeCurrent();
+      } else {
+        open();
+      }
+    };
+    // A beat before (re)connecting, so expanding several folders in a row
+    // is one new stream, not one each.
+    timer = window.setTimeout(open, 300);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      window.clearTimeout(handover);
+      document.removeEventListener("visibilitychange", onVisibility);
+      // Superseded before it was ready. The live one stays until its
+      // successor is ready — or goes in the unmount cleanup below.
+      pending?.close();
+    };
+  }, [watchKey, remote, relistDir]);
+  useEffect(() => () => {
+    dirWatch.current?.es.close();
+    dirWatch.current = null;
+  }, []);
+
+  // Keep the file on screen current with the disk. While it's shown, the
+  // server watches it (/api/fs/watch — the OS's change notifications locally,
+  // a watcher on the host over SSH) and says the moment it changes. Until
+  // that stream is live, or if it breaks, fall back to checking on show and
+  // window focus, plus — for a local file only, where it's a cheap stat —
+  // every couple of seconds. A hidden window drops the watch, and catches up
+  // when it's back. Unsaved edits are never overwritten by any of this.
   const previewShown = !!activePath && !(narrow && narrowTree);
   useEffect(() => {
     if (!previewShown || !activePath) return;
     const path = activePath;
+    let live = false;
     const check = () => {
       if (document.hidden) return;
       const tab = tabsRef.current.find((t) => t.path === path);
@@ -1901,11 +2089,55 @@ function FileTreeView({
         })
         .catch(() => {});
     };
-    check();
-    window.addEventListener("focus", check);
-    const timer = remote ? undefined : window.setInterval(check, 2000);
+
+    let source: EventSource | null = null;
+    let retry: number | undefined;
+    const unwatch = () => {
+      source?.close();
+      source = null;
+      live = false;
+      window.clearTimeout(retry);
+    };
+    const watch = () => {
+      if (source || document.hidden || typeof EventSource === "undefined") return;
+      const es = new EventSource(fsUrl("watch", { path }, remote));
+      source = es;
+      es.addEventListener("ready", () => {
+        live = true;
+        // The watcher only reports changes after its own first look, so
+        // anything since our last check — the first connect included — is
+        // reconciled here.
+        check();
+      });
+      es.addEventListener("change", () => reloadTab(path));
+      es.onerror = () => {
+        live = false;
+        // EventSource retries a dropped stream itself, but gives up on an
+        // error response — try again later rather than never.
+        if (es.readyState === EventSource.CLOSED && source === es) {
+          source = null;
+          retry = window.setTimeout(watch, 10_000);
+        }
+      };
+    };
+    const onFocus = () => {
+      if (!live) check();
+    };
+    const onVisibility = () => {
+      if (document.hidden) unwatch();
+      else watch();
+    };
+
+    // A remote check is a full read, and the watch's `ready` does one anyway.
+    if (!remote || typeof EventSource === "undefined") check();
+    watch();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = remote ? undefined : window.setInterval(() => live || check(), 2000);
     return () => {
-      window.removeEventListener("focus", check);
+      unwatch();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
       window.clearInterval(timer);
     };
   }, [previewShown, activePath, remote, reloadTab]);
@@ -1980,6 +2212,8 @@ function FileTreeView({
           treeCollapsed={collapsed}
           onToggleTree={() => (narrow ? setNarrowTree(true) : setTreeCollapsed((v) => !v))}
           onDirtyChange={markDirty}
+          isDirty={isDirtyNow}
+          draftKey={cacheKey}
           onReload={(force) => reloadTab(tab.path, force)}
           onClose={closePreview}
           closeArmed={closeAllArmed}

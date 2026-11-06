@@ -99,6 +99,53 @@ const DELETE_SCRIPT =
   `${EXPAND_P} { [ -e "$p" ] || [ -L "$p" ]; } || { echo "no such file or directory" >&2; exit 3; }; ` +
   'rm -rf -- "$p"';
 
+/**
+ * $1 = file. Watch it until the channel goes away: `ready` once, then a
+ * `changed` line each time its stat signature (mtime, size, inode — so a
+ * save-by-rename counts) moves. With inotifywait on the host it sleeps on the
+ * file's directory and wakes the moment anything there changes; otherwise it
+ * polls the signature once a second. A symlink's target's directory is
+ * watched as well, re-resolved each round in case the link moves. Either way it prints `.` every ~15 s
+ * when quiet: a client that went away only shows up as a failed write, and
+ * without one an idle watcher would hold its sshd session forever.
+ */
+const WATCH_SCRIPT =
+  `${EXPAND_P} ` +
+  "if stat -c %n / >/dev/null 2>&1; then st() { stat -L -c '%y %s %i' -- \"$p\" 2>/dev/null; }; " +
+  "else st() { stat -L -f '%Fm %z %i' -- \"$p\" 2>/dev/null || stat -L -f '%m %z %i' -- \"$p\" 2>/dev/null; }; fi; " +
+  "if command -v inotifywait >/dev/null 2>&1; then " +
+  'w() { r=$(readlink -f -- "$p" 2>/dev/null || realpath -- "$p" 2>/dev/null) || r=$p; [ -n "$r" ] || r=$p; ' +
+  'inotifywait -qq -t 15 -e close_write,moved_to,create,delete,move_self,delete_self -- "$(dirname -- "$p")" "$(dirname -- "$r")" >/dev/null 2>&1; [ $? -eq 1 ] && sleep 1; }; ' +
+  "else w() { sleep 1; }; fi; " +
+  "m=$(st); h=$(date +%s); echo ready || exit 0; " +
+  'while :; do w; n=$(st); if [ "$n" = "$m" ]; then t=$(date +%s); if [ $((t - h)) -ge 15 ]; then h=$t; echo . || exit 0; fi; ' +
+  "else m=$n; h=$(date +%s); echo changed || exit 0; fi; done";
+
+/**
+ * $1… = directories. Watch them until the channel goes away: `ready` once,
+ * then the 1-based index of a directory each time its listing changes —
+ * compared as a checksum of `ls -la` with full timestamps, so entries coming
+ * and going and files' sizes and dates all count. With inotifywait on the
+ * host it sleeps on all of them at once and wakes the moment one changes
+ * (then settles briefly, so one burst is one report); otherwise it re-checks
+ * them every 2 s. Each directory is listed as `dir/`, so a symlink to a
+ * directory lists what's in it rather than the link itself. Heartbeats like
+ * WATCH_SCRIPT's.
+ */
+const WATCH_DIRS_SCRIPT =
+  "if LC_ALL=C ls -la --full-time / >/dev/null 2>&1; then l() { LC_ALL=C ls -la --full-time -- \"$1/\" 2>/dev/null | cksum; }; " +
+  "elif LC_ALL=C ls -laT / >/dev/null 2>&1; then l() { LC_ALL=C ls -laT -- \"$1/\" 2>/dev/null | cksum; }; " +
+  "else l() { LC_ALL=C ls -la -- \"$1/\" 2>/dev/null | cksum; }; fi; " +
+  "if command -v inotifywait >/dev/null 2>&1; then " +
+  'w() { inotifywait -qq -t 15 -e close_write,create,delete,moved_to,moved_from,attrib,move_self,delete_self -- "$@" >/dev/null 2>&1; ' +
+  "[ $? -eq 1 ] && sleep 2; sleep 0.3 2>/dev/null || sleep 1; }; " +
+  "else w() { sleep 2; }; fi; " +
+  'f=; h=$(date +%s); while :; do i=0; for d in "$@"; do i=$((i + 1)); n=$(l "$d"); eval "o=\\${s$i-}"; ' +
+  'if [ "$n" = "$o" ]; then :; else eval "s$i=\\$n"; if [ -n "$f" ]; then h=$(date +%s); echo "$i" || exit 0; fi; fi; done; ' +
+  "if [ -z \"$f\" ]; then f=1; echo ready || exit 0; fi; " +
+  "t=$(date +%s); if [ $((t - h)) -ge 15 ]; then h=$t; echo . || exit 0; fi; " +
+  'w "$@"; done';
+
 export interface RemoteFsEntry {
   name: string;
   isDir: boolean;
@@ -413,4 +460,95 @@ export async function remoteUpload(sshArgs: string[], dir: string, files: string
       slot.release();
     }
   }
+}
+
+interface WatchHandlers {
+  onReady: () => void;
+  onEnd: (error?: Error) => void;
+}
+
+/**
+ * Run a watch script over its own long-lived channel (counted as a stream,
+ * so watchers can't starve the file tree), passing each line it prints after
+ * `ready` to `onLine`. `onEnd` fires when the watch stops for any reason other
+ * than `signal` aborting — the connection dropped, say — so the caller can
+ * tell its client to reconnect.
+ */
+async function runWatch(
+  sshArgs: string[],
+  script: string,
+  args: string[],
+  handlers: WatchHandlers & { onLine: (line: string) => void },
+  signal: AbortSignal,
+): Promise<void> {
+  const slot = await acquireChannel(sshArgs, { stream: true, signal });
+  if (signal.aborted) {
+    slot.release();
+    return;
+  }
+  const child = spawn("ssh", [...sshArgs, remoteShCommand(script, args, null)], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  let pending = "";
+  const kill = () => {
+    if (child.exitCode === null) child.kill();
+  };
+  signal.addEventListener("abort", kill, { once: true });
+  child.stdout!.on("data", (chunk: Buffer) => {
+    pending += chunk.toString("utf8");
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line === "ready") handlers.onReady();
+      else if (line !== ".") handlers.onLine(line);
+    }
+  });
+  child.stderr!.on("data", (chunk: Buffer) => {
+    if (stderr.length < 8192) stderr += chunk.toString("utf8");
+  });
+  let ended = false;
+  const end = (error?: Error) => {
+    if (ended) return;
+    ended = true;
+    signal.removeEventListener("abort", kill);
+    slot.release();
+    if (!signal.aborted) handlers.onEnd(error);
+  };
+  child.on("error", (error) => end(error));
+  child.on("close", (code) => end(code ? new Error(stderrMessage(stderr, code)) : undefined));
+}
+
+/** Watch a remote file: `onChange` on every change after `onReady`. */
+export function remoteWatch(
+  sshArgs: string[],
+  file: string,
+  handlers: WatchHandlers & { onChange: () => void },
+  signal: AbortSignal,
+): Promise<void> {
+  return runWatch(sshArgs, WATCH_SCRIPT, [file], {
+    ...handlers,
+    onLine: (line) => line === "changed" && handlers.onChange(),
+  }, signal);
+}
+
+/**
+ * Watch remote directories, all over one channel: `onChange(dir)` whenever
+ * the listing of one of them (entries, sizes or dates) changes after
+ * `onReady`.
+ */
+export function remoteWatchDirs(
+  sshArgs: string[],
+  dirs: string[],
+  handlers: WatchHandlers & { onChange: (dir: string) => void },
+  signal: AbortSignal,
+): Promise<void> {
+  return runWatch(sshArgs, WATCH_DIRS_SCRIPT, dirs, {
+    ...handlers,
+    // The host reports a 1-based index, so no name can garble the protocol.
+    onLine: (line) => {
+      const dir = dirs[Number(line) - 1];
+      if (/^\d+$/.test(line) && dir !== undefined) handlers.onChange(dir);
+    },
+  }, signal);
 }

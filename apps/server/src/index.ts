@@ -37,7 +37,10 @@ import {
   remoteRename,
   remoteWrite,
   remoteUpload,
+  remoteWatch,
+  remoteWatchDirs,
 } from "./remoteFs.js";
+import { watchLocalDirs, watchLocalFile } from "./fileWatch.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxPaneHistory, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
 import { TmuxScrollbackRestorer } from "./tmuxScrollback.js";
@@ -504,6 +507,46 @@ function remoteFsFor(sessionId: string | null): { args: string[]; target: string
   const args = sshPortForwarding.execArgs(sessionId);
   if (!args) throw new Error("Remote files are not available for this SSH connection");
   return { args, target: session.sshTarget };
+}
+
+/**
+ * Start a server-sent event stream for a file or directory watch. `onClose`
+ * cleanups and `signal` fire when the client goes away; `end` closes it from
+ * this side (the watch can't go on), and EventSource then reconnects.
+ */
+function openWatchStream(res: ServerResponse) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.write("retry: 3000\n\n");
+  const closed = new AbortController();
+  const cleanups: Array<() => void> = [];
+  // Keeps idle proxies from cutting the stream, and notices a gone client.
+  const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+  const close = () => {
+    if (closed.signal.aborted) return;
+    closed.abort();
+    clearInterval(ping);
+    cleanups.forEach((fn) => fn());
+  };
+  res.on("close", close);
+  res.on("error", close);
+  const end = () => res.end();
+  return {
+    signal: closed.signal,
+    onClose: (fn: () => void) => cleanups.push(fn),
+    send: (event: string, data = "") => {
+      if (!res.writableEnded) res.write(`event: ${event}\ndata: ${data}\n\n`);
+    },
+    end,
+    fail: (error: unknown) => {
+      if (closed.signal.aborted) return;
+      console.error("[termany] watch failed:", error instanceof Error ? error.message : String(error));
+      end();
+    },
+  };
 }
 
 /** A bare base name for a renamed or new entry — no separators, no `.`/`..`. */
@@ -1415,6 +1458,59 @@ const http = createServer((req, res) => {
         size: st.size,
         mtimeMs: st.mtimeMs,
       });
+    })().catch(fail);
+    return;
+  }
+
+  // Push a `change` event whenever the open file changes on disk, so the
+  // viewer reloads it right away instead of polling. Local files use the OS's
+  // own change notifications; a remote one is watched on the host over the
+  // pane's SSH master (see remoteWatch). The stream ends when the watch can't
+  // go on (the connection dropped); EventSource reconnects by itself.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/watch") {
+    (async () => {
+      const requested = reqUrl.searchParams.get("path");
+      if (!requested) throw new Error("path is required");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      const stream = openWatchStream(res);
+      if (!remote) {
+        stream.onClose(watchLocalFile(requested, () => stream.send("change")));
+        stream.send("ready");
+        return;
+      }
+      await remoteWatch(remote.args, requested, {
+        onReady: () => stream.send("ready"),
+        onChange: () => stream.send("change"),
+        onEnd: stream.end,
+      }, stream.signal).catch(stream.fail);
+    })().catch(fail);
+    return;
+  }
+
+  // The file tree's counterpart: one stream for every directory it shows
+  // (repeated `path`), with a `change` event — data: the directory, as JSON —
+  // whenever one's listing changes. Remote directories share one watcher on
+  // the host, so a tree costs one SSH channel however much of it is open.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/watch-dirs") {
+    (async () => {
+      const dirs = [...new Set(reqUrl.searchParams.getAll("path").filter(Boolean))];
+      if (!dirs.length) throw new Error("path is required");
+      if (dirs.length > 256) throw new Error("too many directories");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      const stream = openWatchStream(res);
+      const changed = (dir: string) => stream.send("change", JSON.stringify(dir));
+      if (!remote) {
+        // Report the directory as the client named it, not as resolved.
+        const byResolved = new Map(dirs.map((d) => [path.resolve(d), d]));
+        stream.onClose(watchLocalDirs(dirs, (dir) => changed(byResolved.get(dir) ?? dir)));
+        stream.send("ready");
+        return;
+      }
+      await remoteWatchDirs(remote.args, dirs, {
+        onReady: () => stream.send("ready"),
+        onChange: changed,
+        onEnd: stream.end,
+      }, stream.signal).catch(stream.fail);
     })().catch(fail);
     return;
   }
