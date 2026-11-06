@@ -37,7 +37,9 @@ import {
   remoteRename,
   remoteWrite,
   remoteUpload,
+  remoteWatch,
 } from "./remoteFs.js";
+import { watchLocalFile } from "./fileWatch.js";
 import { SshPortForwarding } from "./sshPortForwarding.js";
 import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxPaneHistory, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
 import { TmuxScrollbackRestorer } from "./tmuxScrollback.js";
@@ -1414,6 +1416,59 @@ const http = createServer((req, res) => {
         isFile: st.isFile(),
         size: st.size,
         mtimeMs: st.mtimeMs,
+      });
+    })().catch(fail);
+    return;
+  }
+
+  // Push a `change` event whenever the open file changes on disk, so the
+  // viewer reloads it right away instead of polling. Local files use the OS's
+  // own change notifications; a remote one is watched on the host over the
+  // pane's SSH master (see remoteWatch). The stream ends when the watch can't
+  // go on (the connection dropped); EventSource reconnects by itself.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/watch") {
+    (async () => {
+      const requested = reqUrl.searchParams.get("path");
+      if (!requested) throw new Error("path is required");
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      });
+      res.write("retry: 3000\n\n");
+      const send = (event: string) => {
+        if (!res.writableEnded) res.write(`event: ${event}\ndata: \n\n`);
+      };
+      const closed = new AbortController();
+      // Keeps idle proxies from cutting the stream, and notices a gone client.
+      const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+      const stopLocal = remote ? undefined : watchLocalFile(requested, () => send("change"));
+      const close = () => {
+        if (closed.signal.aborted) return;
+        closed.abort();
+        clearInterval(ping);
+        stopLocal?.();
+      };
+      res.on("close", close);
+      res.on("error", close);
+      if (!remote) {
+        send("ready");
+        return;
+      }
+      await remoteWatch(
+        remote.args,
+        requested,
+        {
+          onReady: () => send("ready"),
+          onChange: () => send("change"),
+          onEnd: () => res.end(),
+        },
+        closed.signal,
+      ).catch((error) => {
+        if (closed.signal.aborted) return;
+        console.error("[termany] file watch failed:", error instanceof Error ? error.message : String(error));
+        res.end();
       });
     })().catch(fail);
     return;

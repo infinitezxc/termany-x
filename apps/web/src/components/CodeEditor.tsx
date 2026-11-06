@@ -2,7 +2,7 @@ import { indentWithTab } from "@codemirror/commands";
 import { defaultHighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { search } from "@codemirror/search";
-import { Annotation, Compartment, EditorState } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, StateEffect } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -30,6 +30,12 @@ const appTheme = EditorView.theme({
  *  doesn't count as the user's own (unsaved) change. */
 const fromDisk = Annotation.define<boolean>();
 
+/** An editor as it was when torn down — see CodeEditor's `onUnmount`. */
+export interface EditorSnapshot {
+  state: EditorState;
+  scroll: StateEffect<unknown>;
+}
+
 /**
  * An editable, syntax-highlighted view of a file's content — CodeMirror 6
  * under a thin React wrapper. Uncontrolled by design: React never re-renders
@@ -39,6 +45,10 @@ const fromDisk = Annotation.define<boolean>();
  * reports through `onDirtyChange` so the pane can show an unsaved indicator.
  * A new `loadedAt` (the file was re-read from disk) swaps its `content` into
  * the live editor in place, keeping cursor, scroll and undo.
+ * `onUnmount` hands over a snapshot of the editor as it goes away (doc,
+ * selection, undo history, scroll); handing it back through `takeRestore`
+ * brings a later editor back exactly as it was — unsaved edits included —
+ * instead of fresh from `content`.
  */
 export function CodeEditor({
   path,
@@ -48,6 +58,8 @@ export function CodeEditor({
   readOnly = false,
   onSave,
   onDirtyChange,
+  takeRestore,
+  onUnmount,
 }: {
   path: string;
   content: string;
@@ -59,6 +71,13 @@ export function CodeEditor({
   readOnly?: boolean;
   onSave: (text: string) => void;
   onDirtyChange: (dirty: boolean) => void;
+  /** Hands over (and forgets) a snapshot from an earlier editor's
+   *  `onUnmount` to resume from; it counts as unsaved. Called when the editor
+   *  is created — not during render, which on a remount comes before the old
+   *  editor has handed its snapshot over. */
+  takeRestore?: () => EditorSnapshot | undefined;
+  /** Called once, when the editor really goes away (not on a rebuild). */
+  onUnmount?: (snapshot: EditorSnapshot) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -66,6 +85,24 @@ export function CodeEditor({
   onSaveRef.current = onSave;
   const onDirtyChangeRef = useRef(onDirtyChange);
   onDirtyChangeRef.current = onDirtyChange;
+  const onUnmountRef = useRef(onUnmount);
+  onUnmountRef.current = onUnmount;
+  const takeRestoreRef = useRef(takeRestore);
+  takeRestoreRef.current = takeRestore;
+  // The `content`/`loadedAt` the doc last took in. Only a newer pair is
+  // synced in — so a restored draft isn't overwritten by the very content
+  // it was restored over.
+  const syncedRef = useRef<{ content: string; loadedAt?: number } | null>(null);
+  // The previous instance's state when the editor is only being rebuilt in
+  // place (a theme switch), so the rebuild doesn't lose edits or undo either.
+  const carryRef = useRef<EditorSnapshot | null>(null);
+
+  // Declared before the creation effect so this cleanup runs first, while
+  // the view is still there; with no deps, only a real unmount reaches it.
+  useEffect(() => () => {
+    const view = viewRef.current;
+    if (view) onUnmountRef.current?.({ state: view.state, scroll: view.scrollSnapshot() });
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -73,36 +110,53 @@ export function CodeEditor({
     let cancelled = false;
     const languageConf = new Compartment();
 
+    const extensions = [
+      basicSetup,
+      search({ top: true, createPanel: createFindPanel }),
+      keymap.of([
+        indentWithTab,
+        {
+          key: "Mod-s",
+          run: (v) => {
+            onSaveRef.current(v.state.doc.toString());
+            return true;
+          },
+        },
+      ]),
+      languageConf.of([]),
+      dark ? [oneDark] : [syntaxHighlighting(defaultHighlightStyle)],
+      appTheme,
+      // Soft-wrap long lines to the pane width instead of clipping them
+      // behind a horizontal scroll when the pane is narrowed.
+      EditorView.lineWrapping,
+      EditorState.readOnly.of(readOnly),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged && !update.transactions.some((tr) => tr.annotation(fromDisk))) {
+          onDirtyChangeRef.current(true);
+        }
+      }),
+    ];
+    // A restored snapshot keeps its doc, selection and undo history; only
+    // its configuration is swapped for this instance's (theme, language…).
+    const carried = carryRef.current;
+    carryRef.current = null;
+    // Always take it, even when rebuilding from `carried`: a draft must not
+    // linger in the store while an editor for that file is live.
+    const stored = takeRestoreRef.current?.();
+    const snapshot = carried ?? stored;
+    if (!carried) syncedRef.current = { content, loadedAt };
+    const initialState = snapshot
+      ? snapshot.state.update({ effects: StateEffect.reconfigure.of(extensions) }).state
+      : EditorState.create({ doc: content, extensions });
+
     const view = new EditorView({
       parent: host,
-      state: EditorState.create({
-        doc: content,
-        extensions: [
-          basicSetup,
-          search({ top: true, createPanel: createFindPanel }),
-          keymap.of([
-            indentWithTab,
-            {
-              key: "Mod-s",
-              run: (v) => {
-                onSaveRef.current(v.state.doc.toString());
-                return true;
-              },
-            },
-          ]),
-          languageConf.of([]),
-          dark ? [oneDark] : [syntaxHighlighting(defaultHighlightStyle)],
-          appTheme,
-          EditorState.readOnly.of(readOnly),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged && !update.transactions.some((tr) => tr.annotation(fromDisk))) {
-              onDirtyChangeRef.current(true);
-            }
-          }),
-        ],
-      }),
+      state: initialState,
     });
     viewRef.current = view;
+    if (snapshot) view.dispatch({ effects: snapshot.scroll });
+    // A draft is unsaved edits by definition.
+    if (snapshot && !carried) onDirtyChangeRef.current(true);
 
     // Auto-detect the language from the filename and load it in async — a
     // plain view first, then upgraded in place once the language support
@@ -116,6 +170,8 @@ export function CodeEditor({
     return () => {
       cancelled = true;
       viewRef.current = null;
+      // Kept for a rebuild in place; a real unmount just drops it.
+      carryRef.current = { state: view.state, scroll: view.scrollSnapshot() };
       view.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `content` seeds
@@ -129,6 +185,9 @@ export function CodeEditor({
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    const synced = syncedRef.current;
+    if (synced && synced.content === content && synced.loadedAt === loadedAt) return;
+    syncedRef.current = { content, loadedAt };
     const doc = view.state.doc.toString();
     if (doc !== content) {
       let from = 0;

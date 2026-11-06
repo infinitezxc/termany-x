@@ -20,6 +20,7 @@ import {
   remoteStream,
   remoteWrite,
   remoteUpload,
+  remoteWatch,
 } from "./remoteFs.js";
 import { remoteShCommand } from "./remoteCommand.js";
 
@@ -414,3 +415,74 @@ test("folder uploads reject missing destinations and local directories", withFak
   await assert.rejects(remoteUpload([], path.join(root, "missing"), [file]));
   await assert.rejects(remoteUpload([], root, [root]), /regular files/);
 }));
+
+/** Start a remote watch and collect what it reports. */
+function startWatch(file: string) {
+  const events: string[] = [];
+  const waiters: Array<() => void> = [];
+  const push = (e: string) => {
+    events.push(e);
+    waiters.splice(0).forEach((w) => w());
+  };
+  const abort = new AbortController();
+  void remoteWatch(
+    [],
+    file,
+    { onReady: () => push("ready"), onChange: () => push("change"), onEnd: () => push("end") },
+    abort.signal,
+  );
+  const until = async (count: number, event: string) => {
+    const deadline = Date.now() + 8_000;
+    while (events.filter((e) => e === event).length < count) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${event}; saw ${events.join(",")}`);
+      await new Promise<void>((resolve) => {
+        waiters.push(resolve);
+        setTimeout(resolve, 100);
+      });
+    }
+  };
+  return { events, until, stop: () => abort.abort() };
+}
+
+for (const mode of ["polling", "inotifywait"] as const) {
+  test(
+    `remote watch reports writes, save-by-rename and deletion (${mode})`,
+    withFakeSsh(async (root) => {
+      if (mode === "inotifywait") {
+        // Stands in for a host's inotifywait: "an event" every 200 ms.
+        writeFileSync(path.join(root, "bin", "inotifywait"), "#!/bin/sh\nsleep 0.2\n", { mode: 0o755 });
+      }
+      const file = path.join(root, "it's watched.txt");
+      writeFileSync(file, "one");
+      const watch = startWatch(file);
+      try {
+        await watch.until(1, "ready");
+        // A same-second rewrite is still caught: the signature has sub-second mtime and size.
+        writeFileSync(file, "two!");
+        await watch.until(1, "change");
+        const tmp = path.join(root, "tmp");
+        writeFileSync(tmp, "four");
+        execFileSync("mv", [tmp, file]);
+        await watch.until(2, "change");
+        rmSync(file);
+        await watch.until(3, "change");
+        assert.ok(!watch.events.includes("end"));
+      } finally {
+        watch.stop();
+      }
+    }),
+  );
+}
+
+test(
+  "remote watch reports its end when the host side exits",
+  withFakeSsh(async (root) => {
+    // An ssh that can't reach the host.
+    writeFileSync(path.join(root, "bin", "ssh"), "#!/bin/sh\necho 'ssh: connect to host failed' >&2\nexit 255\n", {
+      mode: 0o755,
+    });
+    const watch = startWatch(path.join(root, "x"));
+    await watch.until(1, "end");
+    assert.deepEqual(watch.events, ["end"]);
+  }),
+);

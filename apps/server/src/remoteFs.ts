@@ -99,6 +99,28 @@ const DELETE_SCRIPT =
   `${EXPAND_P} { [ -e "$p" ] || [ -L "$p" ]; } || { echo "no such file or directory" >&2; exit 3; }; ` +
   'rm -rf -- "$p"';
 
+/**
+ * $1 = file. Watch it until the channel goes away: `ready` once, then a
+ * `changed` line each time its stat signature (mtime, size, inode — so a
+ * save-by-rename counts) moves. With inotifywait on the host it sleeps on the
+ * file's directory and wakes the moment anything there changes; otherwise it
+ * polls the signature once a second. A symlink's target's directory is
+ * watched as well, re-resolved each round in case the link moves. Either way it prints `.` every ~15 s
+ * when quiet: a client that went away only shows up as a failed write, and
+ * without one an idle watcher would hold its sshd session forever.
+ */
+const WATCH_SCRIPT =
+  `${EXPAND_P} ` +
+  "if stat -c %n / >/dev/null 2>&1; then st() { stat -L -c '%y %s %i' -- \"$p\" 2>/dev/null; }; " +
+  "else st() { stat -L -f '%Fm %z %i' -- \"$p\" 2>/dev/null || stat -L -f '%m %z %i' -- \"$p\" 2>/dev/null; }; fi; " +
+  "if command -v inotifywait >/dev/null 2>&1; then " +
+  'w() { r=$(readlink -f -- "$p" 2>/dev/null || realpath -- "$p" 2>/dev/null) || r=$p; [ -n "$r" ] || r=$p; ' +
+  'inotifywait -qq -t 15 -e close_write,moved_to,create,delete,move_self,delete_self -- "$(dirname -- "$p")" "$(dirname -- "$r")" >/dev/null 2>&1; [ $? -eq 1 ] && sleep 1; }; ' +
+  "else w() { sleep 1; }; fi; " +
+  "m=$(st); h=$(date +%s); echo ready || exit 0; " +
+  'while :; do w; n=$(st); if [ "$n" != "$m" ]; then m=$n; h=$(date +%s); echo changed || exit 0; ' +
+  "else t=$(date +%s); if [ $((t - h)) -ge 15 ]; then h=$t; echo . || exit 0; fi; fi; done";
+
 export interface RemoteFsEntry {
   name: string;
   isDir: boolean;
@@ -413,4 +435,55 @@ export async function remoteUpload(sshArgs: string[], dir: string, files: string
       slot.release();
     }
   }
+}
+
+/**
+ * Watch a remote file over its own long-lived channel (counted as a stream,
+ * so watchers can't starve the file tree). `onReady` fires once the host has
+ * taken its first look, `onChange` on every change after that, and `onEnd`
+ * when the watch stops for any reason other than `signal` aborting — the
+ * connection dropped, say — so the caller can tell its client to reconnect.
+ */
+export async function remoteWatch(
+  sshArgs: string[],
+  file: string,
+  handlers: { onReady: () => void; onChange: () => void; onEnd: (error?: Error) => void },
+  signal: AbortSignal,
+): Promise<void> {
+  const slot = await acquireChannel(sshArgs, { stream: true, signal });
+  if (signal.aborted) {
+    slot.release();
+    return;
+  }
+  const child = spawn("ssh", [...sshArgs, remoteShCommand(WATCH_SCRIPT, [file], null)], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  let pending = "";
+  const kill = () => {
+    if (child.exitCode === null) child.kill();
+  };
+  signal.addEventListener("abort", kill, { once: true });
+  child.stdout!.on("data", (chunk: Buffer) => {
+    pending += chunk.toString("utf8");
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line === "ready") handlers.onReady();
+      else if (line === "changed") handlers.onChange();
+    }
+  });
+  child.stderr!.on("data", (chunk: Buffer) => {
+    if (stderr.length < 8192) stderr += chunk.toString("utf8");
+  });
+  let ended = false;
+  const end = (error?: Error) => {
+    if (ended) return;
+    ended = true;
+    signal.removeEventListener("abort", kill);
+    slot.release();
+    if (!signal.aborted) handlers.onEnd(error);
+  };
+  child.on("error", (error) => end(error));
+  child.on("close", (code) => end(code ? new Error(stderrMessage(stderr, code)) : undefined));
 }
