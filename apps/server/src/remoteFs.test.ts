@@ -21,6 +21,7 @@ import {
   remoteWrite,
   remoteUpload,
   remoteWatch,
+  remoteWatchDirs,
 } from "./remoteFs.js";
 import { remoteShCommand } from "./remoteCommand.js";
 
@@ -484,5 +485,82 @@ test(
     const watch = startWatch(path.join(root, "x"));
     await watch.until(1, "end");
     assert.deepEqual(watch.events, ["end"]);
+  }),
+);
+
+for (const mode of ["polling", "inotifywait"] as const) {
+  test(
+    `remote dir watch reports which directory's listing changed (${mode})`,
+    withFakeSsh(async (root) => {
+      if (mode === "inotifywait") {
+        writeFileSync(path.join(root, "bin", "inotifywait"), "#!/bin/sh\nsleep 0.2\n", { mode: 0o755 });
+      }
+      // Names that would garble a line-based protocol are reported by index.
+      const a = path.join(root, "it's a\ndir");
+      const b = path.join(root, "b");
+      mkdirSync(a);
+      mkdirSync(b);
+      writeFileSync(path.join(a, "x"), "1");
+      const seen: string[] = [];
+      let ready = false;
+      let ended = false;
+      const abort = new AbortController();
+      void remoteWatchDirs([], [a, b], {
+        onReady: () => (ready = true),
+        onChange: (dir) => seen.push(dir),
+        onEnd: () => (ended = true),
+      }, abort.signal);
+      const until = async (check: () => boolean, what: string) => {
+        const deadline = Date.now() + 8_000;
+        while (!check()) {
+          if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; saw ${JSON.stringify(seen)}`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      };
+      try {
+        await until(() => ready, "ready");
+        writeFileSync(path.join(b, "new"), "hi");
+        await until(() => seen.includes(b), "a new entry in b");
+        assert.ok(!seen.includes(a));
+        // A file's contents changing shows in its size/date, so it counts too.
+        writeFileSync(path.join(a, "x"), "12345");
+        await until(() => seen.includes(a), "a modified file in a");
+        assert.ok(!ended);
+      } finally {
+        abort.abort();
+      }
+    }),
+  );
+}
+
+test(
+  "remote dir watch follows a symlinked directory to its contents",
+  withFakeSsh(async (root) => {
+    const real = path.join(root, "real");
+    mkdirSync(real);
+    const link = path.join(root, "link");
+    symlinkSync(real, link);
+    const seen: string[] = [];
+    let ready = false;
+    const abort = new AbortController();
+    void remoteWatchDirs([], [link], {
+      onReady: () => (ready = true),
+      onChange: (dir) => seen.push(dir),
+      onEnd: () => {},
+    }, abort.signal);
+    try {
+      const deadline = Date.now() + 8_000;
+      while (!ready) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for ready");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      writeFileSync(path.join(real, "inside"), "x");
+      while (!seen.includes(link)) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for a change inside the link's target");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    } finally {
+      abort.abort();
+    }
   }),
 );

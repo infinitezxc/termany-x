@@ -1357,6 +1357,23 @@ function FileTreeView({
       });
   }, [remote]);
 
+  // Re-list a directory in place for a background refresh: unlike loadDir
+  // it never shows "loading" (no flicker), skips the update when nothing
+  // changed, and keeps what's shown if the request fails.
+  const relistDir = useCallback((path: string) => {
+    fetch(fsUrl("list", { path }, remote))
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+        setDirs((d) => {
+          const prev = d[path];
+          if (prev?.status === "loaded" && JSON.stringify(prev.entries) === JSON.stringify(body.entries)) return d;
+          return { ...d, [path]: { status: "loaded", entries: body.entries } };
+        });
+      })
+      .catch(() => {});
+  }, [remote]);
+
   // A genuinely new navigation (the address bar, below) — resets the tree,
   // since folders expanded under the OLD root have nothing to do with this one.
   const navigateTo = useCallback((path: string) => {
@@ -1941,6 +1958,108 @@ function FileTreeView({
       )}
     </>
   );
+
+  // Keep the tree current with the disk too: while it's on screen, the
+  // server watches every directory it shows — the root and each expanded
+  // folder — over one stream (/api/fs/watch-dirs; one SSH channel for a
+  // remote tree) and names each one whose listing changes, which is then
+  // re-listed in place. Expanding or collapsing replaces the stream, and the
+  // old one stays open until the new one is ready, so nothing slips through
+  // the switch; only directories it didn't already cover get re-listed then.
+  // That handover is bounded: a remote host's stream slots can all be taken
+  // (the old stream holding one of them), so if the new one isn't ready
+  // soon, the old one is let go and everything is re-listed once it is.
+  // A reconnect, or the window coming back, re-lists everything.
+  const treeShown = !!root && (!tabs.length || (narrow ? narrowTree : !treeCollapsed));
+  const watchKey = treeShown
+    ? [root!, ...[...expanded].filter((p) => p !== root).sort()].slice(0, 256).join("\0")
+    : "";
+  const dirWatch = useRef<{ es: EventSource; dirs: Set<string>; live: boolean } | null>(null);
+  useEffect(() => {
+    const closeCurrent = () => {
+      dirWatch.current?.es.close();
+      dirWatch.current = null;
+    };
+    if (!watchKey || typeof EventSource === "undefined") {
+      closeCurrent();
+      return;
+    }
+    const list = watchKey.split("\0");
+    let pending: EventSource | null = null;
+    let timer: number | undefined;
+    // This run was superseded: a stream it opened may still be the live one
+    // for a moment, but must not reconnect with this run's (stale) list.
+    let disposed = false;
+    let handover: number | undefined;
+    const open = () => {
+      if (disposed || document.hidden || pending) return;
+      const params = new URLSearchParams();
+      list.forEach((dir) => params.append("path", dir));
+      if (remote) params.set("session", remote);
+      const es = new EventSource(`${apiUrl()}/api/fs/watch-dirs?${params}`);
+      pending = es;
+      let firstReady = true;
+      window.clearTimeout(handover);
+      handover = window.setTimeout(() => {
+        const prev = dirWatch.current;
+        if (pending !== es || !prev || prev.es === es) return;
+        prev.es.close();
+        dirWatch.current = null;
+      }, 2_000);
+      es.addEventListener("ready", () => {
+        window.clearTimeout(handover);
+        const prev = dirWatch.current;
+        // Covered all along only by a live predecessor; this stream's own
+        // reconnect covered nothing in between.
+        const covered = firstReady && prev?.live && prev.es !== es ? prev.dirs : new Set<string>();
+        list.forEach((dir) => covered.has(dir) || relistDir(dir));
+        if (prev && prev.es !== es) prev.es.close();
+        firstReady = false;
+        pending = null;
+        dirWatch.current = { es, dirs: new Set(list), live: true };
+      });
+      es.addEventListener("change", (event) => {
+        const dir = JSON.parse((event as MessageEvent<string>).data) as string;
+        if (list.includes(dir)) relistDir(dir);
+      });
+      es.onerror = () => {
+        if (dirWatch.current?.es === es) dirWatch.current.live = false;
+        // EventSource retries a dropped stream itself, but gives up on an
+        // error response — try again later rather than never.
+        if (es.readyState === EventSource.CLOSED) {
+          if (pending === es) pending = null;
+          if (dirWatch.current?.es === es) dirWatch.current = null;
+          if (!disposed) timer = window.setTimeout(open, 10_000);
+        }
+      };
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        pending?.close();
+        pending = null;
+        closeCurrent();
+      } else {
+        open();
+      }
+    };
+    // A beat before (re)connecting, so expanding several folders in a row
+    // is one new stream, not one each.
+    timer = window.setTimeout(open, 300);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      window.clearTimeout(handover);
+      document.removeEventListener("visibilitychange", onVisibility);
+      // Superseded before it was ready. The live one stays until its
+      // successor is ready — or goes in the unmount cleanup below.
+      pending?.close();
+    };
+  }, [watchKey, remote, relistDir]);
+  useEffect(() => () => {
+    dirWatch.current?.es.close();
+    dirWatch.current = null;
+  }, []);
 
   // Keep the file on screen current with the disk. While it's shown, the
   // server watches it (/api/fs/watch — the OS's change notifications locally,

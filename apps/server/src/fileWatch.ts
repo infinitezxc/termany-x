@@ -113,3 +113,61 @@ export function watchLocalFile(file: string, onChange: () => void, settleMs = 60
     if (polling) fs.unwatchFile(abs, schedule);
   };
 }
+
+/**
+ * Call `onChange(dir)` whenever an entry inside one of the local `dirs` is
+ * added, removed, renamed or modified (the tree shows sizes and dates too),
+ * until the returned stop function runs. A busy directory (a build writing
+ * hundreds of files) is reported at most once per `throttleMs`, after a short
+ * settle so one burst is one report. A directory that can't be watched (gone,
+ * or the OS's watch limit reached) is polled by its own mtime instead, which
+ * still catches entries coming and going.
+ */
+export function watchLocalDirs(
+  dirs: string[],
+  onChange: (dir: string) => void,
+  { settleMs = 100, throttleMs = 1000 }: { settleMs?: number; throttleMs?: number } = {},
+): () => void {
+  let stopped = false;
+  const stops: Array<() => void> = [];
+  for (const dir of new Set(dirs.map((d) => path.resolve(d)))) {
+    let timer: NodeJS.Timeout | undefined;
+    let lastReport = 0;
+    const report = () => {
+      timer = undefined;
+      if (stopped) return;
+      lastReport = Date.now();
+      onChange(dir);
+    };
+    const schedule = () => {
+      if (timer || stopped) return;
+      timer = setTimeout(report, Math.max(settleMs, lastReport + throttleMs - Date.now()));
+    };
+    let polled = false;
+    const poll = () => {
+      if (polled || stopped) return;
+      polled = true;
+      fs.watchFile(dir, { interval: 2000 }, schedule);
+    };
+    let watcher: fs.FSWatcher | null = null;
+    try {
+      watcher = fs.watch(dir, { persistent: false }, schedule);
+      watcher.on("error", () => {
+        watcher?.close();
+        watcher = null;
+        poll();
+      });
+    } catch {
+      poll();
+    }
+    stops.push(() => {
+      if (timer) clearTimeout(timer);
+      watcher?.close();
+      if (polled) fs.unwatchFile(dir, schedule);
+    });
+  }
+  return () => {
+    stopped = true;
+    stops.forEach((stop) => stop());
+  };
+}
