@@ -7,6 +7,19 @@ import path from "node:path";
 import { createTmux, killTmux, listTmux, tmuxAttachCommand, tmuxName, tmuxSessionCwd, parseTmuxSessions } from "./tmux.js";
 import { attachOnce, onAlternateScreen, skipWithoutTmux, withTmuxServer } from "./tmuxTestServer.js";
 
+test("Claude running sessions retain their OSC title without a transcript", () => {
+  const row = "$1:1:1:10:claude:238a238d-fb3c-430e-904e-b38657a18ac1:123:termany-claude-session";
+  const session = parseTmuxSessions(`${row}:✳ POET Level 3: 决策循环架构`)[0];
+  assert.equal(session.title, "POET Level 3: 决策循环架构");
+  assert.equal(session.name, "termany-claude-session");
+  assert.equal(session.conversationId, "238a238d-fb3c-430e-904e-b38657a18ac1");
+  for (const title of ["", "host-name", "✳ Claude Code"]) {
+    assert.equal(parseTmuxSessions(`${row}:${title}`)[0].title, undefined);
+  }
+  assert.equal(parseTmuxSessions("$2:1:0:10:::123:termany-claude-old:✻ Named session")[0].title, "Named session");
+  assert.equal(parseTmuxSessions("$2:1:0:10:codex::123:codex:✳ Other")[0].title, undefined);
+});
+
 test("tmux names reject control characters and ambiguous target separators", () => {
   for (const value of ["", "a:b", "a.b", "a\nb", null, 12]) assert.throws(() => tmuxName(value));
   // The name reaches the script as an argument, never as script text.

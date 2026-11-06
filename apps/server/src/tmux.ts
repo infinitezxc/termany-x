@@ -17,10 +17,11 @@ export interface TmuxSession {
 
 const CHECK = 'command -v tmux >/dev/null 2>&1 || { echo "tmux is not installed on this host" >&2; exit 1; }; ';
 // tmux prints control characters in -F output as "_", so fields are joined
-// with ":", which tmux never allows in a session name. The name goes last.
+// with ":", which tmux never allows in a session name. The title goes last
+// because it can contain colons.
 const LIST_FORMAT = [
   "#{session_id}", "#{session_windows}", "#{session_attached}", "#{session_created}",
-  "#{@termany-agent}", "#{@termany-conversation}", "#{pane_pid}", "#{session_name}",
+  "#{@termany-agent}", "#{@termany-conversation}", "#{pane_pid}", "#{session_name}", "#{pane_title}",
 ].join(":");
 // A host with no tmux server yet has no sessions; anything else is an error.
 const LIST_SCRIPT = CHECK +
@@ -81,9 +82,16 @@ export function tmuxAttachCommand(name: string, slot = randomInt(1_000_000, 2_00
 }
 export function parseTmuxSessions(output: string): TmuxSession[] {
   return output.trimEnd().split("\n").filter(Boolean).map(line => {
-    const [id, windows, attached, created, agent, conversationId, panePid, ...name] = line.split(":");
+    const [id, windows, attached, created, agent, conversationId, panePid, name, ...paneTitle] = line.split(":");
+    // Claude can display a conversation before its new transcript exists (for
+    // example after resuming). Its OSC title is still available in tmux.
+    // Require Claude's status prefix so a shell hostname is never a title.
+    const title = (agent === "claude" || legacyAgent(name) === "claude")
+      ? /^[·✢✳∗✻✽]\s+(.+)$/.exec(paneTitle.join(":").trim())?.[1].trim()
+      : undefined;
     return {
-      id, name: name.join(":"), windows: Number(windows), attached: Number(attached), created: Number(created),
+      id, name, windows: Number(windows), attached: Number(attached), created: Number(created),
+      ...(title && title !== "Claude Code" ? { title } : {}),
       ...(SESSION_AGENTS.includes(agent as SessionAgent) ? { agent: agent as SessionAgent } : {}),
       ...(UUID.test(conversationId) ? { conversationId } : {}),
       ...(panePid ? { panePid: Number(panePid) } : {}),
