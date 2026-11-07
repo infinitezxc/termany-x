@@ -941,7 +941,9 @@ function FilePreview({
   const keepDraft = useCallback((snapshot: EditorSnapshot) => {
     if (isDirty(selected.path)) putDraft(draftKey, selected.path, snapshot);
   }, [draftKey, isDirty, selected.path]);
-  const [showSource, setShowSource] = useState(false);
+  // Markdown opens straight into the editor — it's usually opened to be
+  // edited; the toolbar toggle still flips it to the rendered preview.
+  const [showSource, setShowSource] = useState(() => isMarkdownPath(selected.path));
   // A draft is source edits — reopen on the source, not a rendered view.
   // Checked once mounted: on a remount, the old editor only hands its draft
   // over after this one's render.
