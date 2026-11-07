@@ -6911,8 +6911,8 @@ html.tauri #root {
 
 /* VS Code–style minimap beside the file viewer's scrollbar, for both the
    editor and the rendered Markdown preview (minimapStrip.ts). Its width must
-   match MINIMAP_WIDTH there; the content padding below is that width plus a
-   small gap. */
+   match MINIMAP_WIDTH there. It overlays the content's right edge (its
+   background is set to the content's backdrop when it is revealed). */
 .file-minimap {
   position: absolute;
   top: 0;
@@ -6923,13 +6923,15 @@ html.tauri #root {
   cursor: default;
   user-select: none;
   box-shadow: -1px 0 0 color-mix(in srgb, var(--fg-dim) 18%, transparent);
-  /* Hidden until scrolling or a resting pointer reveals it; it still takes
-     pointer events so hovering the strip can reveal it. */
+  /* Hidden until scrolling with the pointer over it reveals it; hidden, it
+     lets clicks and text selection through to the content beneath. */
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.2s ease-out;
 }
 .file-minimap.file-minimap-active {
   opacity: 1;
+  pointer-events: auto;
   transition-duration: 0.08s;
 }
 .file-minimap.file-minimap-visible {
@@ -6940,11 +6942,4 @@ html.tauri #root {
 }
 .file-minimap-probe {
   display: none;
-}
-/* Keep text from wrapping under the minimap while it is shown. */
-.code-editor .cm-editor:has(> .file-minimap-visible) .cm-content {
-  padding-right: 84px;
-}
-.markdown-preview-host:has(> .file-minimap-visible) > .markdown-preview {
-  padding-right: 108px;
 }

@@ -100,8 +100,7 @@ class Minimap extends MinimapStrip {
       rowsVisible: height / view.defaultLineHeight,
       topLine: lineAt(docTop),
       bottomLine: lineAt(docTop + height),
-      // Wrapping only adds rows, so this lower bound never flips the minimap
-      // on and off as its own padding re-wraps the text.
+      // A lower bound (wrapping only adds rows), cheap to read on every measure.
       shown: view.state.doc.lines * view.defaultLineHeight > height,
       fg: getComputedStyle(view.contentDOM).color,
       addedColor: getComputedStyle(view.dom).getPropertyValue("--git-added").trim() || "#2ea043",

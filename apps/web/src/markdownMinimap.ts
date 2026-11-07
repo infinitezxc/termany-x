@@ -126,8 +126,6 @@ export class MarkdownMinimap extends MinimapStrip<PreviewMeasure> {
       topLine: s.scrollTop / lineHeight,
       bottomLine: (s.scrollTop + height) / lineHeight,
       rowsVisible: height / lineHeight,
-      // Reserving the minimap's room only makes the page taller, so this never
-      // flips back as the text re-wraps around it.
       shown: scrollHeight > height + 1,
       fg: style.color,
       addedColor: style.getPropertyValue("--git-added").trim() || "#2ea043",

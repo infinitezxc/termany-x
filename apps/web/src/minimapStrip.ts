@@ -5,9 +5,11 @@
  * pointer, the slider and its dragging, wheel pass-through, and the ruler.
  *
  * Only offered when the content is taller than the pane, and then only
- * revealed while it scrolls or the pointer rests over the strip; it fades out
- * shortly after. Its space stays reserved so text never re-wraps as it comes
- * and goes. Nothing is drawn while it is hidden.
+ * revealed by scrolling with the pointer over the strip's area. It stays while
+ * the pointer does (so the slider can be grabbed) and fades out shortly after
+ * the pointer leaves. It overlays the content's right edge rather than
+ * reserving room, so hidden it leaves no blank band and lets clicks through.
+ * Nothing is drawn while it is hidden.
  */
 
 /** Matches `.file-minimap` width in styles.css (and the content padding there). */
@@ -18,10 +20,8 @@ export const TEXT_ALPHA = 0.75;
 const MIN_SLIDER = 8;
 /** Room for content left of the ruler (2px of it is the added-line edge). */
 export const TEXT_WIDTH = MINIMAP_WIDTH - RULER_WIDTH - 2;
-/** How long the pointer must rest over the strip before it appears. */
-const HOVER_REVEAL_MS = 150;
-/** How long it stays after scrolling or hovering stops. */
-const HIDE_AFTER_MS = 1000;
+/** How long it stays after the pointer leaves its area. */
+const HIDE_AFTER_MS = 300;
 
 export interface MinimapLayout {
   /** Minimap pixels scrolled off its top. */
@@ -75,6 +75,15 @@ export function sliderTarget(sliderTop: number, layout: MinimapLayout, lines: nu
   return { line: Math.min(lines, Math.max(0, sliderTop / LINE_H)) };
 }
 
+/** The first opaque background at or above `el`, which the strip must match. */
+function backdropColor(el: Element | null): string {
+  for (; el; el = el.parentElement) {
+    const color = getComputedStyle(el).backgroundColor;
+    if (color && color !== "transparent" && !/^rgba\(.*,\s*0\)$/.test(color)) return color;
+  }
+  return "";
+}
+
 export interface MinimapMeasure {
   top: number;
   height: number;
@@ -105,17 +114,19 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
   measured: M | null = null;
   layout: MinimapLayout | null = null;
   drag: { grab: number } | null = null;
+  /** The pointer is over the strip's area, whether or not it is revealed. */
   hover = false;
-  /** Revealed (visible and interactive); hidden it is only a hover target. */
+  /** A button is held, as when selecting text — scrolling then won't reveal. */
+  pressed = false;
+  /** Revealed (visible and interactive); hidden it ignores the pointer. */
   active = false;
   /** A paint was skipped while hidden; repaint on reveal. */
   stale = true;
-  revealTimer: ReturnType<typeof setTimeout> | undefined;
   hideTimer: ReturnType<typeof setTimeout> | undefined;
   /** Last box written to `dom.style`, so steady scrolling writes no styles. */
   box = "";
 
-  constructor(host: HTMLElement, readonly scroller: HTMLElement) {
+  constructor(readonly host: HTMLElement, readonly scroller: HTMLElement) {
     this.dom = document.createElement("div");
     this.dom.className = "file-minimap";
     this.dom.setAttribute("aria-hidden", "true");
@@ -127,9 +138,13 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
     this.dom.addEventListener("pointermove", this.onPointerMove);
     this.dom.addEventListener("pointerup", this.onPointerUp);
     this.dom.addEventListener("pointercancel", this.onPointerUp);
-    this.dom.addEventListener("pointerenter", this.onHover);
-    this.dom.addEventListener("pointerleave", this.onHover);
     this.dom.addEventListener("wheel", this.onWheel, { passive: false });
+    // Hidden, the strip takes no pointer events, so its area is tracked from
+    // the host it overlays (events on the revealed strip bubble there too).
+    host.addEventListener("pointermove", this.onHostPointer);
+    host.addEventListener("pointerdown", this.onHostPointer);
+    host.addEventListener("pointerup", this.onHostPointer);
+    host.addEventListener("pointerleave", this.onHostPointer);
     scroller.addEventListener("scroll", this.onScroll, { passive: true });
   }
 
@@ -155,7 +170,7 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
       this.hide();
       return;
     }
-    // Placed even while hidden: the invisible strip is the hover target.
+    // Placed even while hidden: its box is the area that reveals it.
     this.placeBox(m);
     if (!this.active) {
       this.stale = true;
@@ -220,32 +235,47 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
   }
 
   reveal() {
-    clearTimeout(this.revealTimer);
-    if (!this.active) {
-      this.active = true;
-      this.dom.classList.add("file-minimap-active");
-      if (this.stale) this.schedule();
-    }
-    this.scheduleHide();
+    clearTimeout(this.hideTimer);
+    if (this.active) return;
+    this.active = true;
+    // It covers the content's edge, so it needs the backdrop the content sits on.
+    this.dom.style.backgroundColor = backdropColor(this.host);
+    this.dom.classList.add("file-minimap-active");
+    if (this.stale) this.schedule();
   }
 
-  /** Fade out after a quiet spell, unless the pointer is still on it. */
+  /** Fade out shortly, unless the pointer came back or is dragging. */
   scheduleHide() {
     clearTimeout(this.hideTimer);
-    if (this.hover || this.drag) return;
+    if (!this.active || this.hover || this.drag) return;
     this.hideTimer = setTimeout(() => this.hide(), HIDE_AFTER_MS);
   }
 
   hide() {
-    clearTimeout(this.revealTimer);
     clearTimeout(this.hideTimer);
     this.active = false;
     this.dom.classList.remove("file-minimap-active");
   }
 
+  /** Only scrolling with the pointer over the strip's area reveals it. */
   onScroll = () => {
-    if (this.measured?.shown) this.reveal();
-    this.schedule();
+    if (this.active) this.schedule();
+    else if (this.hover && !this.pressed && this.measured?.shown) this.reveal();
+  };
+
+  onHostPointer = (event: PointerEvent) => {
+    this.pressed = event.type !== "pointerup" && event.buttons !== 0;
+    let hover = false;
+    if (event.type !== "pointerleave" && this.measured?.shown) {
+      const r = this.dom.getBoundingClientRect();
+      hover = event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom;
+    }
+    if (hover === this.hover) return;
+    this.hover = hover;
+    if (hover) clearTimeout(this.hideTimer);
+    else this.scheduleHide();
+    // Hover only shades the slider; nothing to repaint while hidden.
+    if (this.active) this.schedule();
   };
 
   scrollToSliderTop(sliderTop: number) {
@@ -263,13 +293,8 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
 
   onPointerDown = (event: PointerEvent) => {
     if (event.button !== 0 || !this.measured?.shown) return;
+    if (!this.active) return;
     event.preventDefault();
-    // A click on the hidden strip only reveals it; jumping through the file
-    // from an empty-looking margin would be a surprise.
-    if (!this.active) {
-      this.reveal();
-      return;
-    }
     const y = this.localY(event);
     const { sliderTop: top, sliderHeight: height } = this.layout ?? { sliderTop: 0, sliderHeight: 0 };
     // Grabbing the slider keeps its offset; clicking elsewhere centers it there.
@@ -293,20 +318,6 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
     this.schedule();
   };
 
-  onHover = (event: PointerEvent) => {
-    this.hover = event.type === "pointerenter";
-    clearTimeout(this.revealTimer);
-    if (this.hover) {
-      clearTimeout(this.hideTimer);
-      // Passing over the strip on the way somewhere else should not flash it.
-      if (!this.active) this.revealTimer = setTimeout(() => this.reveal(), HOVER_REVEAL_MS);
-    } else {
-      this.scheduleHide();
-    }
-    // Hover only shades the slider; nothing to repaint while hidden.
-    if (this.active) this.schedule();
-  };
-
   onWheel = (event: WheelEvent) => {
     // The minimap sits outside the scroller; pass wheel scrolling through.
     event.preventDefault();
@@ -318,9 +329,11 @@ export abstract class MinimapStrip<M extends MinimapMeasure = MinimapMeasure> {
   };
 
   destroy() {
-    clearTimeout(this.revealTimer);
     clearTimeout(this.hideTimer);
     this.scroller.removeEventListener("scroll", this.onScroll);
+    for (const type of ["pointermove", "pointerdown", "pointerup", "pointerleave"] as const) {
+      this.host.removeEventListener(type, this.onHostPointer);
+    }
     this.dom.remove();
   }
 }
