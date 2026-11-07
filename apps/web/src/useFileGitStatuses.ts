@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl } from "./api";
 
 type GitLineTotals = { added: number; removed: number };
@@ -81,6 +81,22 @@ export function useFileGitStatuses(directories: string[], remote?: string, total
     };
   }, [key, remote]);
   const refresh = useCallback(() => kick.current(), []);
-  const current = snapshot.key === key;
-  return { statuses: current ? snapshot.statuses : {}, totals: current ? snapshot.totals : null, failed, refresh };
+  // Expanding or collapsing a folder changes `key`. Until that request lands,
+  // keep showing the last statuses from the same host instead of blanking
+  // every badge; paths are absolute, so entries for other folders are harmless.
+  // Totals belong to one folder, so they carry over only while it is unchanged.
+  const [snapshotRemote, , snapshotTotalsFor] = useMemo(
+    () => snapshot.key
+      ? JSON.parse(snapshot.key) as [string | null, string[], string | null]
+      : [undefined, [], undefined],
+    [snapshot.key],
+  );
+  const sameHost = !!snapshot.key && (snapshotRemote ?? null) === (remote ?? null);
+  const sameTotals = sameHost && snapshotTotalsFor === (totalsFor ?? null);
+  return {
+    statuses: sameHost ? snapshot.statuses : {},
+    totals: sameTotals ? snapshot.totals : null,
+    failed,
+    refresh,
+  };
 }
