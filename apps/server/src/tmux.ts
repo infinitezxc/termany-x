@@ -83,15 +83,19 @@ export function tmuxAttachCommand(name: string, slot = randomInt(1_000_000, 2_00
 export function parseTmuxSessions(output: string): TmuxSession[] {
   return output.trimEnd().split("\n").filter(Boolean).map(line => {
     const [id, windows, attached, created, agent, conversationId, panePid, name, ...paneTitle] = line.split(":");
-    // Claude can display a conversation before its new transcript exists (for
-    // example after resuming). Its OSC title is still available in tmux.
-    // Require Claude's status prefix so a shell hostname is never a title.
-    const title = (agent === "claude" || legacyAgent(name) === "claude")
-      ? /^[·✢✳∗✻✽]\s+(.+)$/.exec(paneTitle.join(":").trim())?.[1].trim()
-      : undefined;
+    // The transcript may not exist locally (Codex can use its app-server),
+    // while the CLI still publishes its conversation title through OSC.
+    // Recognize each agent's format so a shell hostname is never a title.
+    const kind = agent || legacyAgent(name);
+    const oscTitle = paneTitle.join(":").trim();
+    const title = kind === "claude"
+      ? /^[·✢✳∗✻✽]\s+(.+)$/.exec(oscTitle)?.[1].trim()
+      : kind === "codex"
+        ? /^(.*?)\s+\|\s+.+$/.exec(oscTitle)?.[1].replace(/^[\u2800-\u28ff]\s+/, "").trim()
+        : undefined;
     return {
       id, name, windows: Number(windows), attached: Number(attached), created: Number(created),
-      ...(title && title !== "Claude Code" ? { title } : {}),
+      ...(title && title !== "Claude Code" && !/^codex$/i.test(title) ? { title } : {}),
       ...(SESSION_AGENTS.includes(agent as SessionAgent) ? { agent: agent as SessionAgent } : {}),
       ...(UUID.test(conversationId) ? { conversationId } : {}),
       ...(panePid ? { panePid: Number(panePid) } : {}),

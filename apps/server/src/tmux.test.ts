@@ -20,6 +20,20 @@ test("Claude running sessions retain their OSC title without a transcript", () =
   assert.equal(parseTmuxSessions("$2:1:0:10:codex::123:codex:✳ Other")[0].title, undefined);
 });
 
+test("Codex running sessions retain their OSC conversation title without a local transcript", () => {
+  const row = "$4:1:1:10:codex::123:termany-codex-new";
+  const session = parseTmuxSessions(`${row}:修复 Chrome 更新后重连 | EnvSet`)[0];
+  assert.equal(session.title, "修复 Chrome 更新后重连");
+  assert.equal(session.conversationId, undefined);
+  assert.equal(parseTmuxSessions(`${row}:⠧ 修复 Chrome 更新后重连 | EnvSet`)[0].title, session.title);
+  assert.equal(parseTmuxSessions(`${row}:Fix: reconnect | EnvSet`)[0].title, "Fix: reconnect");
+  for (const title of ["", "host-name", "Codex", "Codex | EnvSet", "codex | EnvSet"]) {
+    assert.equal(parseTmuxSessions(`${row}:${title}`)[0].title, undefined);
+  }
+  assert.equal(parseTmuxSessions("$4:1:0:10:::123:termany-codex-old:Named session | EnvSet")[0].title, "Named session");
+  assert.equal(parseTmuxSessions("$4:1:0:10:::123:shell:Named session | EnvSet")[0].title, undefined);
+});
+
 test("tmux names reject control characters and ambiguous target separators", () => {
   for (const value of ["", "a:b", "a.b", "a\nb", null, 12]) assert.throws(() => tmuxName(value));
   // The name reaches the script as an argument, never as script text.
