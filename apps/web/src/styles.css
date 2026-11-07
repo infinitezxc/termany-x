@@ -3256,6 +3256,14 @@ html.tauri #root {
 .cm-find-count.miss {
   color: #f87171;
 }
+/* Positions the preview's minimap (markdownMinimap.ts) beside its scrollbar. */
+.markdown-preview-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .markdown-preview {
   flex: 1;
   min-height: 0;
@@ -6901,10 +6909,11 @@ html.tauri #root {
   white-space: nowrap;
 }
 
-/* VS Code–style minimap beside the file viewer's scrollbar (fileMinimap.ts).
-   Its width must match MINIMAP_WIDTH there; the content padding below is
-   that width plus a small gap. */
-.code-editor .cm-minimap {
+/* VS Code–style minimap beside the file viewer's scrollbar, for both the
+   editor and the rendered Markdown preview (minimapStrip.ts). Its width must
+   match MINIMAP_WIDTH there; the content padding below is that width plus a
+   small gap. */
+.file-minimap {
   position: absolute;
   top: 0;
   right: 0;
@@ -6914,25 +6923,28 @@ html.tauri #root {
   cursor: default;
   user-select: none;
   box-shadow: -1px 0 0 color-mix(in srgb, var(--fg-dim) 18%, transparent);
-  /* Hidden until scrolling or a resting pointer reveals it (fileMinimap.ts);
-     it still takes pointer events so hovering the strip can reveal it. */
+  /* Hidden until scrolling or a resting pointer reveals it; it still takes
+     pointer events so hovering the strip can reveal it. */
   opacity: 0;
   transition: opacity 0.2s ease-out;
 }
-.code-editor .cm-minimap.cm-minimap-active {
+.file-minimap.file-minimap-active {
   opacity: 1;
   transition-duration: 0.08s;
 }
-.code-editor .cm-minimap.cm-minimap-visible {
+.file-minimap.file-minimap-visible {
   display: block;
 }
-.code-editor .cm-minimap canvas {
+.file-minimap canvas {
   display: block;
 }
-.code-editor .cm-minimap-probe {
+.file-minimap-probe {
   display: none;
 }
 /* Keep text from wrapping under the minimap while it is shown. */
-.code-editor .cm-editor:has(> .cm-minimap-visible) .cm-content {
+.code-editor .cm-editor:has(> .file-minimap-visible) .cm-content {
   padding-right: 84px;
+}
+.markdown-preview-host:has(> .file-minimap-visible) > .markdown-preview {
+  padding-right: 108px;
 }

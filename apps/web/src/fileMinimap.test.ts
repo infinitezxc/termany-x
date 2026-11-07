@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { EditorState } from "@codemirror/state";
 import { gitLineChanges, setGitBase, setGitLines } from "./fileGitChanges";
-import { addedLineNumbers, lineRuns, minimapLayout, sliderTarget } from "./fileMinimap";
+import { addedLineNumbers, lineRuns } from "./fileMinimap";
+import { minimapLayout, sliderTarget } from "./minimapStrip";
 
 test("lineRuns merges consecutive added lines", () => {
   assert.deepEqual(lineRuns([]), []);

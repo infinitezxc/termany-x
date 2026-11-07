@@ -10,6 +10,8 @@ import { useFileGitStatuses } from "../useFileGitStatuses";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
 import { parseMarkdownTable } from "../markdownTable";
+import { MarkdownMinimap, srcRange } from "../markdownMinimap";
+import { sharedGitDiffWorker } from "../gitDiffWorkerClient";
 import { useI18n } from "../i18n";
 import { useFileDrag } from "../fileDrag";
 import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
@@ -258,7 +260,7 @@ function inlineMarkdown(text: string, baseDir = "", remote?: string): Array<stri
   return out;
 }
 
-function MarkdownCodeBlock({ code }: { code: string }) {
+function MarkdownCodeBlock({ code, src }: { code: string; src: string }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -274,7 +276,7 @@ function MarkdownCodeBlock({ code }: { code: string }) {
 
   const label = t(status === "failed" ? "gateway.copyFailed" : "markdown.copy");
   return (
-    <div className="markdown-preview-code">
+    <div className="markdown-preview-code" data-src={src}>
       <button
         type="button"
         className="markdown-preview-code-copy"
@@ -289,17 +291,25 @@ function MarkdownCodeBlock({ code }: { code: string }) {
   );
 }
 
-function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDir: string; remote?: string }) {
+/** Rendered Markdown blocks. Each carries `data-src` — the 1-based source
+ *  lines it came from — so the minimap can tint the ones added since HEAD. */
+function markdownBlocks(content: string, baseDir: string, remote?: string): JSX.Element[] {
   const blocks: JSX.Element[] = [];
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   let paragraph: string[] = [];
-  let list: Array<{ ordered: boolean; text: string }> = [];
+  let paragraphStart = 0;
+  let list: Array<{ ordered: boolean; text: string; line: number }> = [];
   let code: string[] | null = null;
+  let codeStart = 0;
   let codeKey = 0;
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "), baseDir, remote)}</p>);
+    blocks.push(
+      <p key={`p-${blocks.length}`} data-src={srcRange(paragraphStart, paragraphStart + paragraph.length - 1)}>
+        {inlineMarkdown(paragraph.join(" "), baseDir, remote)}
+      </p>
+    );
     paragraph = [];
   };
   const flushList = () => {
@@ -309,7 +319,7 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
     blocks.push(
       <Tag key={`l-${blocks.length}`}>
         {list.map((item, idx) => (
-          <li key={idx}>{inlineMarkdown(item.text, baseDir, remote)}</li>
+          <li key={idx} data-src={srcRange(item.line)}>{inlineMarkdown(item.text, baseDir, remote)}</li>
         ))}
       </Tag>
     );
@@ -318,9 +328,10 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
+    const lineNo = lineIndex + 1;
     if (code) {
       if (/^```/.test(line)) {
-        blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} />);
+        blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} src={srcRange(codeStart, lineNo)} />);
         code = null;
       } else code.push(line);
       continue;
@@ -329,6 +340,7 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
       flushParagraph();
       flushList();
       code = [];
+      codeStart = lineNo;
       continue;
     }
     if (!line.trim()) {
@@ -344,14 +356,14 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
         <div className="markdown-preview-table" key={`t-${blocks.length}`}>
           <table>
             <thead>
-              <tr>{table.headers.map((cell, index) => (
+              <tr data-src={srcRange(lineNo, lineNo + 1)}>{table.headers.map((cell, index) => (
                 <th key={index} scope="col" style={{ textAlign: table.alignments[index] }}>
                   {inlineMarkdown(cell, baseDir, remote)}
                 </th>
               ))}</tr>
             </thead>
             <tbody>{table.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>{row.map((cell, index) => (
+              <tr key={rowIndex} data-src={srcRange(lineNo + 2 + rowIndex)}>{row.map((cell, index) => (
                 <td key={index} style={{ textAlign: table.alignments[index] }}>
                   {inlineMarkdown(cell, baseDir, remote)}
                 </td>
@@ -369,36 +381,85 @@ function MarkdownPreview({ content, baseDir, remote }: { content: string; baseDi
       flushList();
       const level = heading[1].length;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2], baseDir, remote)}</Tag>);
+      blocks.push(<Tag key={`h-${blocks.length}`} data-src={srcRange(lineNo)}>{inlineMarkdown(heading[2], baseDir, remote)}</Tag>);
       continue;
     }
     if (/^\s*[-*_]{3,}\s*$/.test(line)) {
       flushParagraph();
       flushList();
-      blocks.push(<hr key={`hr-${blocks.length}`} />);
+      blocks.push(<hr key={`hr-${blocks.length}`} data-src={srcRange(lineNo)} />);
       continue;
     }
     const quote = /^>\s?(.*)$/.exec(line);
     if (quote) {
       flushParagraph();
       flushList();
-      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1], baseDir, remote)}</blockquote>);
+      blocks.push(<blockquote key={`q-${blocks.length}`} data-src={srcRange(lineNo)}>{inlineMarkdown(quote[1], baseDir, remote)}</blockquote>);
       continue;
     }
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
     const ordered = /^\s*\d+\.\s+(.*)$/.exec(line);
     if (bullet || ordered) {
       flushParagraph();
-      list.push({ ordered: !!ordered, text: (bullet ?? ordered)![1] });
+      list.push({ ordered: !!ordered, text: (bullet ?? ordered)![1], line: lineNo });
       continue;
     }
+    if (!paragraph.length) paragraphStart = lineNo;
     paragraph.push(line.trim());
   }
-  if (code) blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} />);
+  if (code) blocks.push(<MarkdownCodeBlock key={`c-${codeKey++}`} code={code.join("\n")} src={srcRange(codeStart, lines.length)} />);
   flushParagraph();
   flushList();
+  return blocks;
+}
 
-  return <div className="markdown-preview">{blocks}</div>;
+function MarkdownPreview({ content, baseDir, remote, gitBase }: {
+  content: string;
+  baseDir: string;
+  remote?: string;
+  /** HEAD's version of the file, for the minimap's added-line tint. */
+  gitBase: string | null;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const minimapRef = useRef<MarkdownMinimap | null>(null);
+  const blocks = useMemo(() => markdownBlocks(content, baseDir, remote), [content, baseDir, remote]);
+
+  useEffect(() => {
+    const minimap = new MarkdownMinimap(hostRef.current!, scrollRef.current!);
+    minimapRef.current = minimap;
+    return () => {
+      minimap.destroy();
+      minimapRef.current = null;
+    };
+  }, []);
+  useEffect(() => minimapRef.current?.invalidate(), [blocks]);
+  // Added lines index the content they were diffed against: new content drops
+  // them at once, while a new HEAD keeps them until its own diff lands. The
+  // worker enforces the size limit and answers undefined past it.
+  const diffedContent = useRef<string | null>(null);
+  useEffect(() => {
+    const minimap = minimapRef.current;
+    if (!minimap) return;
+    if (gitBase === null || content !== diffedContent.current) {
+      minimap.setAdded([]);
+      diffedContent.current = null;
+    }
+    if (gitBase === null) return;
+    const owner = {};
+    void sharedGitDiffWorker.request(owner, gitBase, content).then((lines) => {
+      if (!lines) return;
+      minimap.setAdded(lines);
+      diffedContent.current = content;
+    });
+    return () => sharedGitDiffWorker.cancel(owner);
+  }, [gitBase, content]);
+
+  return (
+    <div className="markdown-preview-host" ref={hostRef}>
+      <div className="markdown-preview" ref={scrollRef}>{blocks}</div>
+    </div>
+  );
 }
 
 interface FsEntry {
@@ -984,7 +1045,7 @@ function FilePreview({
   const showsRendered =
     selected.status === "text" && !selected.truncated && !showSource && hasRenderedView(selected.path);
   const { content: gitBase, failed: gitBaseFailed } = useFileGitBase(selected.path,
-    visible && selected.status === "text" && !selected.truncated && !showsRendered,
+    visible && selected.status === "text" && !selected.truncated && (!showsRendered || isMarkdownPath(selected.path)),
     remote, selected.loadedAt);
   useEffect(() => {
     if (!visible || selected.status !== "text") return;
@@ -1168,7 +1229,12 @@ function FilePreview({
       {saveError && <div className="file-tree-message file-preview-error">Save failed: {saveError}</div>}
       {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
       {rendered === "markdown" ? (
-        <MarkdownPreview content={selected.content ?? ""} baseDir={dirname(selected.path)} remote={remote} />
+        <MarkdownPreview
+          content={selected.content ?? ""}
+          baseDir={dirname(selected.path)}
+          remote={remote}
+          gitBase={gitBase}
+        />
       ) : rendered === "html" ? (
         <iframe
           className="html-preview"
