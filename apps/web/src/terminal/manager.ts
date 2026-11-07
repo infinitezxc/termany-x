@@ -26,6 +26,7 @@ import {
   type AgentScreenTransition,
 } from "./agentIdleWatcher";
 import { readAgentScreen } from "./agentScreenView";
+import { WheelLineAccumulator } from "./wheelScroll";
 import { SYMBOLS_FONT_FAMILY, withSymbolsFallback } from "./fonts";
 import { registerLocalPathLinks } from "./localLinks";
 import { registerOsc52 } from "./osc52";
@@ -74,9 +75,8 @@ export interface Session {
   /** Absolute buffer row held in view after the user scrolls away from live output. */
   lockedViewportY: number | null;
   manualScrollUntil: number;
-  deferredOutput: string[];
-  deferredSince: number;
-  deferredFlushTimer: number | null;
+  /** Fractional wheel rows carried between trackpad events. */
+  wheel: WheelLineAccumulator;
   spawnedAt: number;
   restartAttempts: number;
   /** A remote SSH process exited and is waiting for explicit reconnection. */
@@ -102,41 +102,68 @@ export interface Session {
 }
 
 /**
- * A mouse-wheel scroll only moves xterm's DOM scroll container immediately;
- * the row-based position it tracks internally for auto-follow (`ydisp`) is
- * only updated once the resulting native `scroll` event round-trips back
- * asynchronously. If a PTY write lands inside that gap, xterm's own core
- * buffer logic (which advances `ydisp` alongside new content whenever
- * `ydisp === ybase`, i.e. "was at the bottom") still sees the pre-scroll
- * state and re-pins to the bottom on its own — no explicit scrollToBottom()
- * call of ours involved, so gating just those calls (below) isn't enough.
- * Under fast/continuous output the gap can be starved for a while (writes
- * keep the main thread busy ahead of the queued scroll event), so instead
- * PTY data arriving inside a short window after a wheel tick is held back
- * from `term.write()` entirely, giving xterm's scroll round-trip a clear
- * chance to land before any new content can trigger that internal re-pin.
+ * How long after a wheel gesture only the user may change follow mode.
+ * Output-driven TUI redraws also move xterm's viewport and emit onScroll;
+ * inside this window those events are not mistaken for the reader scrolling,
+ * and the bottom is not re-pinned under someone who is still scrolling.
+ *
+ * Output itself is never held back: wheel scrolling goes through
+ * `term.scrollLines()` (see wheelScroll.ts), which updates xterm's buffer
+ * position synchronously, so there is no window in which a write can pull the
+ * reader back down.
  */
 const MANUAL_SCROLL_COOLDOWN_MS = 500;
-/** Hard ceiling on how long output can be held back, even if the user keeps scrolling. */
-const MAX_DEFER_MS = 1500;
+
+/** Record the user's scroll position as the follow / lock state. */
+function captureUserScroll(session: Session) {
+  const state = readScrollState(session.term);
+  session.followOutput = state.atBottom;
+  session.lockedViewportY = state.atBottom ? null : session.term.buffer.active.viewportY;
+}
 
 export function noteManualScroll(id: string) {
   const session = sessions.get(id);
   if (!session) return;
   session.manualScrollUntil = Date.now() + MANUAL_SCROLL_COOLDOWN_MS;
-  // Lock immediately, before the browser's native scroll event has necessarily
-  // updated xterm's viewportY. This closes the race where a PTY write lands
-  // between the wheel gesture and xterm noticing that it left the bottom.
-  session.followOutput = false;
-  session.lockedViewportY = session.term.buffer.active.viewportY;
-  requestAnimationFrame(() => {
-    const latest = sessions.get(id);
-    if (!latest) return;
-    const state = readScrollState(latest.term);
-    latest.followOutput = state.atBottom;
-    latest.lockedViewportY = state.atBottom ? null : latest.term.buffer.active.viewportY;
-    notifyScrollState(id);
+  captureUserScroll(session);
+  notifyScrollState(id);
+}
+
+/**
+ * Wheel scrolling of the normal buffer, done synchronously in rows. Returns
+ * false (consumed) when the terminal scrolled, true to let xterm do its default
+ * handling: alternate-screen arrow-key emulation, horizontal/shift scrolling,
+ * or bubbling to the page at the scrollback's ends.
+ */
+function handleWheelScroll(id: string, ev: WheelEvent): boolean {
+  const session = sessions.get(id);
+  if (!session) return true;
+  const term = session.term;
+  const buf = term.buffer.active;
+  // xterm also calls this on its mouse-reporting path; an app that asked for
+  // mouse events must keep receiving the wheel.
+  if (term.modes.mouseTrackingMode !== "none") return true;
+  if (ev.shiftKey || ev.deltaY === 0 || buf.type !== "normal" || buf.baseY === 0) return true;
+  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+  const rowHeight = screen && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+  if (!(rowHeight > 0)) return true;
+  const lines = session.wheel.lines(ev, {
+    rowHeight,
+    rows: term.rows,
+    sensitivity: term.options.scrollSensitivity,
+    fastSensitivity: term.options.fastScrollSensitivity,
   });
+  const atEdge = lines < 0 ? buf.viewportY <= 0 : buf.viewportY >= buf.baseY;
+  if (lines !== 0 && atEdge) {
+    session.wheel.reset();
+    return true;
+  }
+  if (ev.cancelable) ev.preventDefault();
+  session.manualScrollUntil = Date.now() + MANUAL_SCROLL_COOLDOWN_MS;
+  if (lines !== 0) term.scrollLines(lines);
+  captureUserScroll(session);
+  notifyScrollState(id);
+  return false;
 }
 
 function finishSessionWrite(id: string) {
@@ -161,41 +188,7 @@ function finishSessionWrite(id: string) {
 function writeSessionData(id: string, data: string) {
   const session = sessions.get(id);
   if (!session) return;
-  const now = Date.now();
-  const withinCooldown = now < session.manualScrollUntil;
-  const withinDeferCeiling = !session.deferredSince || now - session.deferredSince < MAX_DEFER_MS;
-  if (withinCooldown && withinDeferCeiling) {
-    if (!session.deferredOutput.length) session.deferredSince = now;
-    session.deferredOutput.push(data);
-    scheduleDeferredFlush(id);
-    return;
-  }
   session.term.write(data, () => finishSessionWrite(id));
-}
-
-function scheduleDeferredFlush(id: string) {
-  const session = sessions.get(id);
-  if (!session || session.deferredFlushTimer !== null) return;
-  const delay = Math.max(0, session.manualScrollUntil - Date.now()) + 16;
-  session.deferredFlushTimer = window.setTimeout(() => {
-    const latest = sessions.get(id);
-    if (!latest) return;
-    latest.deferredFlushTimer = null;
-    flushDeferredOutput(id);
-  }, delay);
-}
-
-function flushDeferredOutput(id: string) {
-  const session = sessions.get(id);
-  if (!session || !session.deferredOutput.length) return;
-  const now = Date.now();
-  if (now < session.manualScrollUntil && now - session.deferredSince < MAX_DEFER_MS) {
-    scheduleDeferredFlush(id);
-    return;
-  }
-  const combined = session.deferredOutput.splice(0).join("");
-  session.deferredSince = 0;
-  session.term.write(combined, () => finishSessionWrite(id));
 }
 
 export type TerminalScrollState = {
@@ -1103,11 +1096,24 @@ export function subscribeTerminalScrollState(
     listeners = new Set();
     scrollListeners.set(id, listeners);
   }
-  listeners.add(listener);
+  // Notified after every PTY write and scroll step; forward only real changes
+  // so the pane's scroll buttons do not re-render per output chunk.
+  let last: TerminalScrollState | null = null;
+  const deduped = (state: TerminalScrollState) => {
+    if (
+      last &&
+      last.hasOverflow === state.hasOverflow &&
+      last.atTop === state.atTop &&
+      last.atBottom === state.atBottom
+    ) return;
+    last = state;
+    listener(state);
+  };
+  listeners.add(deduped);
   const session = sessions.get(id);
-  if (session) listener(readScrollState(session.term));
+  if (session) deduped(readScrollState(session.term));
   return () => {
-    listeners?.delete(listener);
+    listeners?.delete(deduped);
     if (listeners?.size === 0) scrollListeners.delete(id);
   };
 }
@@ -1687,9 +1693,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     followOutput: true,
     lockedViewportY: null,
     manualScrollUntil: 0,
-    deferredOutput: [],
-    deferredSince: 0,
-    deferredFlushTimer: null,
+    wheel: new WheelLineAccumulator(),
     spawnedAt: Date.now(),
     restartAttempts: 0,
     reconnectTimer: null,
@@ -2139,6 +2143,7 @@ export function attachSession(
     fixAbandonedImeFinalize(s.term);
     fixWebkitGtkImeComposition(s.term, imeLog);
     traceImeEvents(s.term);
+    s.term.attachCustomWheelEventHandler((ev) => handleWheelScroll(id, ev));
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
       // Only a scroll inside the user's wheel window may change follow mode.
