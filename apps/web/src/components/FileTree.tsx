@@ -897,6 +897,7 @@ function FilePreview({
   isDirty,
   draftKey,
   onReload,
+  onSaved,
   onClose,
   closeArmed,
 }: {
@@ -922,6 +923,8 @@ function FilePreview({
   draftKey: string;
   /** Re-read the file from disk; `force` throws away unsaved edits. */
   onReload: (force: boolean) => void;
+  /** After a successful write, so Git badges catch up without waiting for a poll. */
+  onSaved: () => void;
   /** Close every tab. Armed = asked once already, because some have unsaved edits. */
   onClose: () => void;
   closeArmed: boolean;
@@ -1023,9 +1026,10 @@ function FilePreview({
         if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error || `HTTP ${res.status}`);
         // Typing that landed while the save was in flight is still unsaved.
         if (editorView()?.state.doc.toString() === text) setDirty(false);
+        onSaved();
       })
       .catch((e) => setSaveError(e instanceof Error ? e.message : String(e)));
-  }, [remote, setDirty]);
+  }, [remote, setDirty, onSaved]);
 
   const header = (
     <div className="file-tree-head">
@@ -1312,7 +1316,7 @@ function FileTreeView({
   const [collapsedFrom, setCollapsedFrom] = useState(initial.collapsedFrom);
   const [tabs, setTabs] = useState(initial.tabs);
   const [activePath, setActivePath] = useState(initial.activePath);
-  const { statuses: gitStatuses, totals: gitTotals, failed: gitStatusFailed } = useFileGitStatuses([
+  const { statuses: gitStatuses, totals: gitTotals, failed: gitStatusFailed, refresh: refreshGit } = useFileGitStatuses([
     ...(root ? [root] : []), ...expanded, ...tabs.map((tab) => dirname(tab.path)),
   ], remote, root);
   const folderStatuses = useMemo(() => folderGitStatuses(gitStatuses), [gitStatuses]);
@@ -2062,7 +2066,11 @@ function FileTreeView({
       });
       es.addEventListener("change", (event) => {
         const dir = JSON.parse((event as MessageEvent<string>).data) as string;
-        if (list.includes(dir)) relistDir(dir);
+        if (list.includes(dir)) {
+          relistDir(dir);
+          // Edits from anywhere (an agent, another editor) show without waiting for the poll.
+          refreshGit();
+        }
       });
       es.onerror = () => {
         if (dirWatch.current?.es === es) dirWatch.current.live = false;
@@ -2097,7 +2105,7 @@ function FileTreeView({
       // successor is ready — or goes in the unmount cleanup below.
       pending?.close();
     };
-  }, [watchKey, remote, relistDir]);
+  }, [watchKey, remote, relistDir, refreshGit]);
   useEffect(() => () => {
     dirWatch.current?.es.close();
     dirWatch.current = null;
@@ -2258,6 +2266,7 @@ function FileTreeView({
           isDirty={isDirtyNow}
           draftKey={cacheKey}
           onReload={(force) => reloadTab(tab.path, force)}
+          onSaved={refreshGit}
           onClose={closePreview}
           closeArmed={closeAllArmed}
         />
