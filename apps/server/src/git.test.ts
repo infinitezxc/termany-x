@@ -36,7 +36,7 @@ test("an untracked diff reads and returns only a bounded file prefix", async (t)
 });
 
 import { mkdir, writeFile } from "node:fs/promises";
-import { gitFileStatuses, withGitHost, type GitHost } from "./git";
+import { gitDirectoryLineTotals, gitFileStatuses, withGitHost, type GitHost } from "./git";
 
 test("file-view statuses preserve index/worktree state and exact paths across repos", async (t) => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "termany-file-status-"));
@@ -270,4 +270,26 @@ test("SSH non-Git directories count as checked despite a deleted child", async (
     const statuses = await withGitHost(selectedHost, () => gitFileStatuses(directories));
     assert.deepEqual({ ...statuses }, {});
   }
+});
+
+test("folder line totals cover staged and unstaged tracked edits under that folder only", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "termany-line-totals-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = (...args: string[]) => execFileAsync("git", args, { cwd: root });
+  await git("init", "--quiet");
+  await mkdir(path.join(root, "sub"));
+  await writeFile(path.join(root, "top.txt"), "a\nb\n");
+  await writeFile(path.join(root, "sub", "inner.txt"), "one\ntwo\nthree\n");
+  await git("add", ".");
+  // Before the first commit everything staged counts as added.
+  assert.deepEqual(await gitDirectoryLineTotals(root), { added: 5, removed: 0 });
+  await git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial");
+  assert.deepEqual(await gitDirectoryLineTotals(root), { added: 0, removed: 0 });
+  await writeFile(path.join(root, "top.txt"), "a\nchanged\nnew\n");
+  await git("add", "top.txt");
+  await writeFile(path.join(root, "sub", "inner.txt"), "one\n");
+  await writeFile(path.join(root, "sub", "untracked.txt"), "ignored by totals\n");
+  assert.deepEqual(await gitDirectoryLineTotals(root), { added: 2, removed: 3 });
+  assert.deepEqual(await gitDirectoryLineTotals(path.join(root, "sub")), { added: 0, removed: 2 });
+  assert.equal(await gitDirectoryLineTotals(os.tmpdir()), null);
 });

@@ -1312,9 +1312,9 @@ function FileTreeView({
   const [collapsedFrom, setCollapsedFrom] = useState(initial.collapsedFrom);
   const [tabs, setTabs] = useState(initial.tabs);
   const [activePath, setActivePath] = useState(initial.activePath);
-  const { statuses: gitStatuses, failed: gitStatusFailed } = useFileGitStatuses([
+  const { statuses: gitStatuses, totals: gitTotals, failed: gitStatusFailed } = useFileGitStatuses([
     ...(root ? [root] : []), ...expanded, ...tabs.map((tab) => dirname(tab.path)),
-  ], remote);
+  ], remote, root);
   const folderStatuses = useMemo(() => folderGitStatuses(gitStatuses), [gitStatuses]);
   const selected = tabs.find((t) => t.path === activePath) ?? null;
   // Tabs with unsaved edits — reported up by each tab's editor.
@@ -1897,6 +1897,15 @@ function FileTreeView({
             }
           }}
         />
+        {gitTotals && (gitTotals.added > 0 || gitTotals.removed > 0) && (
+          <span
+            className="file-git-stats"
+            title={`Changes since last commit in this folder (tracked files, saved to disk): ${gitTotals.added} added, ${gitTotals.removed} removed lines`}
+          >
+            <span data-git-tone="added">+{gitTotals.added}</span>
+            <span data-git-tone="deleted">−{gitTotals.removed}</span>
+          </span>
+        )}
         {!remote && (
           <button
             className="pane-btn"

@@ -245,6 +245,35 @@ export async function gitFileStatuses(directories: string[]): Promise<Record<str
   return statuses;
 }
 
+/** HEAD's commit id, or undefined in a repository with no commits yet. */
+async function headCommit(cwd: string): Promise<string | undefined> {
+  try {
+    return (await git(["rev-parse", "--verify", "HEAD"], cwd)).trim();
+  } catch (error) {
+    if (!/Needed a single revision|unknown revision|ambiguous argument ['"]HEAD/i.test(String(error))) throw error;
+    return undefined;
+  }
+}
+
+/** Line totals against HEAD for tracked files under one directory, staged and
+ * unstaged together — the file tree's "+added −removed" summary. Untracked
+ * files count as 0, as in the Git pane. null means the directory is not in Git. */
+export async function gitDirectoryLineTotals(directory: string): Promise<{ added: number; removed: number } | null> {
+  if (!await viewerDirectory(directory)) return null;
+  // No commit yet: everything staged counts as added, against the empty tree.
+  const head = await headCommit(directory) ??
+    (await git(["hash-object", "-t", "tree", "/dev/null"], directory)).trim();
+  // Pathspec "." run from the directory limits the diff to that subtree.
+  const counts = parseNumstat(await git(["diff", "--numstat", "-z", head, "--", "."], directory));
+  let added = 0;
+  let removed = 0;
+  for (const count of counts.values()) {
+    added += count.additions;
+    removed += count.deletions;
+  }
+  return { added, removed };
+}
+
 /** Text at HEAD for inline additions in a file viewer. null means no useful
  * comparison (outside Git, ignored, binary, or too large); an empty string
  * means a new file. All commands run on the file's host, not the pane cwd. */
@@ -254,12 +283,7 @@ export async function gitFileBase(filePath: string): Promise<string | null> {
   const { root, prefix } = resolved;
   const relative = prefix + host().path.basename(filePath);
   const cache = viewerCache();
-  let head: string | undefined;
-  try {
-    head = (await git(["rev-parse", "--verify", "HEAD"], root)).trim();
-  } catch (error) {
-    if (!/Needed a single revision|unknown revision|ambiguous argument ['"]HEAD/i.test(String(error))) throw error;
-  }
+  const head = await headCommit(root);
   const entryKey = `${root}\0${head}\0${relative}`;
   let entry = cache.entries.get(entryKey);
   if (!entry && head) {

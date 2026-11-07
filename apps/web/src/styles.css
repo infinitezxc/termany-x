@@ -6887,3 +6887,15 @@ html.tauri #root {
   font-size: 11px;
   color: var(--fg-dim);
 }
+
+/* Folder +added −removed line totals beside the file tree header buttons. */
+.file-git-stats {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 6px;
+  padding: 0 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}

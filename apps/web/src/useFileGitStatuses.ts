@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
 import { apiUrl } from "./api";
 
+type GitLineTotals = { added: number; removed: number };
+
 /** Polling also catches index-only changes (stage/commit), which file watchers
- * cannot see. Pause in hidden windows and never overlap requests. */
-export function useFileGitStatuses(directories: string[], remote?: string) {
+ * cannot see. Pause in hidden windows and never overlap requests. `totalsFor`
+ * also asks for that folder's +added −removed lines against HEAD. */
+export function useFileGitStatuses(directories: string[], remote?: string, totalsFor?: string | null) {
   const paths = [...new Set(directories)].sort().slice(0, 256);
-  const key = JSON.stringify([remote, paths]);
-  const [snapshot, setSnapshot] = useState<{ key: string; statuses: Record<string, string> }>({ key: "", statuses: {} });
+  const key = JSON.stringify([remote, paths, totalsFor ?? null]);
+  const [snapshot, setSnapshot] = useState<{ key: string; statuses: Record<string, string>; totals: GitLineTotals | null }>(
+    { key: "", statuses: {}, totals: null });
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     setFailed(false);
-    const [, directories] = JSON.parse(key) as [string | null, string[]];
+    const [, directories, totalsFor] = JSON.parse(key) as [string | null, string[], string | null];
     if (!directories.length) return;
     const controller = new AbortController();
     let busy = false;
@@ -21,15 +25,21 @@ export function useFileGitStatuses(directories: string[], remote?: string) {
         const res = await fetch(`${apiUrl()}/api/git/file-status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ directories, session: remote }),
+          body: JSON.stringify({ directories, session: remote, ...(totalsFor ? { totalsFor } : {}) }),
           signal: controller.signal,
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = await res.json() as { statuses: Record<string, string> };
+        const body = await res.json() as { statuses: Record<string, string>; totals?: GitLineTotals | null };
         if (!controller.signal.aborted) {
           setFailed(false);
-          setSnapshot((previous) => previous.key === key && JSON.stringify(previous.statuses) === JSON.stringify(body.statuses)
-            ? previous : { key, statuses: body.statuses });
+          setSnapshot((previous) => {
+            const same = previous.key === key;
+            // No `totals` means the server could not count them: keep the last ones.
+            const totals = body.totals !== undefined ? body.totals : same ? previous.totals : null;
+            return same && JSON.stringify(previous.statuses) === JSON.stringify(body.statuses) &&
+              previous.totals?.added === totals?.added && previous.totals?.removed === totals?.removed
+              ? previous : { key, statuses: body.statuses, totals };
+          });
         }
       } catch {
         if (!controller.signal.aborted) setFailed(true);
@@ -48,5 +58,6 @@ export function useFileGitStatuses(directories: string[], remote?: string) {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [key, remote]);
-  return { statuses: snapshot.key === key ? snapshot.statuses : {}, failed };
+  const current = snapshot.key === key;
+  return { statuses: current ? snapshot.statuses : {}, totals: current ? snapshot.totals : null, failed };
 }

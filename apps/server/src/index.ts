@@ -75,7 +75,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiffs, gitFileBase, gitFileStatuses, gitOverview, withGitHost, worktreeOverview } from "./git.js";
+import { gitDiffs, gitDirectoryLineTotals, gitFileBase, gitFileStatuses, gitOverview, withGitHost, worktreeOverview } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { cwdForPid as nativeCwdForPid } from "./processCwd.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
@@ -2003,9 +2003,20 @@ const http = createServer((req, res) => {
         json(400, { error: "Expected up to 256 directory paths" });
         return;
       }
+      const totalsFor = typeof body?.totalsFor === "string" && body.totalsFor && !body.totalsFor.includes("\0")
+        ? body.totalsFor : null;
       const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
-      const read = () => gitFileStatuses(directories);
-      json(200, { statuses: remote ? await withGitHost(remoteGitHost(remote.args), read) : await read() });
+      const read = async () => {
+        const statuses = await gitFileStatuses(directories);
+        // Skip the numstat while nothing tracked has changed (the common case).
+        const changed = Object.values(statuses).some((status) => status !== "??");
+        // A failed numstat omits `totals`, so the client keeps its last value.
+        const totals = !totalsFor ? undefined : changed
+          ? await gitDirectoryLineTotals(totalsFor).catch(() => undefined)
+          : { added: 0, removed: 0 };
+        return { statuses, ...(totals !== undefined ? { totals } : {}) };
+      };
+      json(200, remote ? await withGitHost(remoteGitHost(remote.args), read) : await read());
     }).catch(fail);
     return;
   }
