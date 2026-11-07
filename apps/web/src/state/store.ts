@@ -81,7 +81,11 @@ export type Pane =
        *  session-history browser resumes into it — lets a later click on the
        *  same conversation jump here instead of resuming a second copy. */
       agentSession?: { agent: string; sessionId: string };
-
+      /** The SSH host a shell-less view was opened for, recorded at creation.
+       *  Its host normally follows the anchor chain; this only says what that
+       *  host was once the chain is broken (the source pane closed), so the
+       *  view can say so instead of quietly showing this machine. */
+      openedOnHost?: SshConnectionFields;
     }
   | {
       kind: "split";
@@ -285,14 +289,16 @@ interface State {
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
   clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`.
-   *  `inheritSsh` opens a terminal on the source pane's SSH host, if it has one. */
+   *  Like every new pane it opens where its source is (see newLeafFrom): a
+   *  terminal lands on the source's SSH host unless `local` or a named
+   *  `sshTarget` says otherwise. */
   addPane: (
     view: PaneView,
     title?: string,
     cwdFrom?: string,
     /** A terminal's destination: inherited from the source pane, or named. */
     opts?: {
-      inheritSsh?: boolean; tmuxSession?: string; sshTarget?: string; sshLabel?: string;
+      local?: boolean; tmuxSession?: string; sshTarget?: string; sshLabel?: string;
       agentSession?: { agent: string; sessionId: string };
     },
   ) => string | null;
@@ -352,8 +358,7 @@ function nextPaneTitle(layout: Pane): string {
   return `pane ${highest + 1}`;
 }
 
-function makeHTab(n: number, cwdFrom?: string, ssh?: SshConnectionFields): HTab {
-  const leaf = { ...makeLeaf(undefined, cwdFrom), ...ssh };
+function makeHTab(n: number, leaf: Pane & { kind: "leaf" } = makeLeaf()): HTab {
   return { id: id(), title: `tab ${n}`, layout: leaf, focused: leaf.id };
 }
 
@@ -567,8 +572,8 @@ function setSizesAt(pane: Pane, path: number[], sizes: number[]): Pane {
   };
 }
 
-function makeNode(title: string, cwdFrom?: string): TreeNode {
-  const h = makeHTab(1, cwdFrom);
+function makeNode(title: string, leaf?: Pane & { kind: "leaf" }): TreeNode {
+  const h = makeHTab(1, leaf);
   return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id };
 }
 
@@ -1043,7 +1048,7 @@ export const useStore = create<State>((set, get) => ({
       if (!ws) return s;
       // Lands after the last root, so that's the page it opens next to.
       const source = ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined;
-      const node = makeNode(`page ${ws.roots.length + 1}`, source);
+      const node = makeNode(`page ${ws.roots.length + 1}`, newLeafFrom(s, source));
       return {
         workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...w.roots, node] })),
         ...goToPage(s, node.id, { fresh: true }),
@@ -1056,7 +1061,7 @@ export const useStore = create<State>((set, get) => ({
       if (!ws) return s;
       // A child page opens where its parent page is.
       const parent = findNode(ws.roots, parentId);
-      const child = makeNode("untitled", parent && nodeCwdSource(parent));
+      const child = makeNode("untitled", newLeafFrom(s, parent && nodeCwdSource(parent)));
       return {
         workspaces: inActiveWs(s, (w) => ({
           ...w,
@@ -1210,7 +1215,7 @@ export const useStore = create<State>((set, get) => ({
           // Follow the tab the user is coming from — which is also what the
           // page's directory means, so the no-tabs case needs no separate path.
           const source = nodeCwdSource(n);
-          const h = makeHTab(n.htabs.length + 1, source, source ? inheritedSsh(s, source) : undefined);
+          const h = makeHTab(n.htabs.length + 1, newLeafFrom(s, source));
           return { ...n, htabs: [...n.htabs, h], activeHTab: h.id };
         }),
       })),
@@ -1329,7 +1334,7 @@ export const useStore = create<State>((set, get) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            const leaf = { ...makeLeaf(nextPaneTitle(h.layout), h.focused), ...inheritedSsh(s, h.focused) };
+            const leaf = newLeafFrom(s, h.focused, { title: nextPaneTitle(h.layout) });
             const next = {
               ...h,
               layout: splitPane(h.layout, h.focused, dir, leaf),
@@ -1565,9 +1570,11 @@ export const useStore = create<State>((set, get) => ({
             // and a terminal knows where to spawn.
             const source = cwdFrom ?? h.focused;
             const leaf = {
-              ...makeLeaf(title ?? nextPaneTitle(h.layout), source),
-              view,
-              ...(view === "terminal" && opts?.inheritSsh ? inheritedSsh(s, source) : undefined),
+              ...newLeafFrom(s, source, {
+                title: title ?? nextPaneTitle(h.layout),
+                view,
+                local: opts?.local || !!opts?.sshTarget,
+              }),
               ...(view === "terminal" && opts?.sshTarget ? { sshTarget: opts.sshTarget, sshLabel: opts.sshLabel } : undefined),
               ...(view === "terminal" && opts?.tmuxSession ? { tmuxSession: opts.tmuxSession } : undefined),
               ...(view === "terminal" && opts?.agentSession ? { agentSession: opts.agentSession } : undefined),
@@ -1938,16 +1945,35 @@ export function remoteSessionFor(s: State, leafId: string): string | undefined {
   return leaf?.sshTarget && terminalSessionId(leaf.id, leaf.sshTarget);
 }
 
+export type PaneHost =
+  | { kind: "local" }
+  | { kind: "ssh"; label: string; session: string }
+  /** Opened for an SSH host whose pane has since closed: nothing to read through. */
+  | { kind: "closed"; label: string };
+
 /**
- * The host a machine-wide view (agent usage, activity monitor) opened from the
- * focused pane reports on: that SSH pane's session, or undefined for this machine.
+ * The host a machine-wide view (agent usage, activity monitor) in `leafId`
+ * reports on. It follows the pane's own anchor chain like remoteSessionFor,
+ * so it doesn't depend on which pane has focus. When the chain is broken it
+ * falls back to the host recorded at creation, reported as closed.
  */
-export function focusedSshHost(s: State): { label: string; session: string } | undefined {
-  const id = focusedCwdSession(s);
-  const leaf = id ? remoteLeafFor(s, id) : undefined;
-  return leaf?.sshTarget
-    ? { label: leaf.sshLabel ?? leaf.sshTarget, session: terminalSessionId(leaf.id, leaf.sshTarget) }
-    : undefined;
+export function paneHost(s: State, leafId: string): PaneHost {
+  const [self, ...anchors] = cwdCandidates(s, leafId).map((id) => findLeafGlobal(s, id));
+  const ssh = (leaf: Pane & { kind: "leaf" } & { sshTarget: string }): PaneHost =>
+    ({ kind: "ssh", label: leaf.sshLabel ?? leaf.sshTarget, session: terminalSessionId(leaf.id, leaf.sshTarget) });
+  // Same walk as remoteLeafFor: the first pane with a shell decides.
+  if (!self) return { kind: "local" };
+  if (self.sshTarget) return ssh({ ...self, sshTarget: self.sshTarget });
+  if ((self.view ?? "terminal") === "terminal") return { kind: "local" };
+  for (const leaf of anchors) {
+    if (!leaf) {
+      const host = self.openedOnHost;
+      return host ? { kind: "closed", label: host.sshLabel ?? host.sshTarget } : { kind: "local" };
+    }
+    if (leaf.sshTarget) return ssh({ ...leaf, sshTarget: leaf.sshTarget });
+    if ((leaf.view ?? "terminal") === "terminal") return { kind: "local" };
+  }
+  return { kind: "local" };
 }
 
 /** The SSH pane behind remoteSessionFor — for its target and label. */
@@ -1974,6 +2000,41 @@ type SshConnectionFields = { sshTarget: string; sshLabel?: string };
 function inheritedSsh(s: State, sourceId: string): SshConnectionFields | undefined {
   const leaf = remoteLeafFor(s, sourceId);
   return leaf?.sshTarget ? { sshTarget: leaf.sshTarget, sshLabel: leaf.sshLabel } : undefined;
+}
+
+/**
+ * The one way a new pane is made from an existing one (split, new pane, tab
+ * or page): anchored to `source` so it starts in that pane's directory, and —
+ * for a terminal — on the same SSH host, so opening something from a remote
+ * pane (or any view anchored to one, like git or files) never drops back to
+ * this machine. The server then starts the remote shell in the source
+ * session's live directory (see cwdSessionCandidates).
+ */
+function newLeafFrom(
+  s: State,
+  source: string | undefined,
+  opts: { title?: string; view?: PaneView; local?: boolean } = {},
+): Pane & { kind: "leaf" } {
+  const leaf = makeLeaf(opts.title, source);
+  const terminal = (opts.view ?? "terminal") === "terminal";
+  const ssh = source && !opts.local ? inheritedSsh(s, source) : undefined;
+  return {
+    ...leaf,
+    ...(opts.view ? { view: opts.view } : undefined),
+    ...(ssh ? (terminal ? ssh : { openedOnHost: ssh }) : undefined),
+  };
+}
+
+/**
+ * cwdCandidates as terminal session ids — what the server's spawn takes as
+ * `cwdFrom`. An SSH pane's shell is keyed by its host, so a remote anchor is
+ * only found under that id.
+ */
+export function cwdSessionCandidates(s: State, leafId: string): string[] {
+  return cwdCandidates(s, leafId).map((id) => {
+    const leaf = findLeafGlobal(s, id);
+    return leaf?.sshTarget ? terminalSessionId(leaf.id, leaf.sshTarget) : id;
+  });
 }
 
 /** Views an SSH pane can show: the ones that read through its connection. */

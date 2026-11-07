@@ -58,6 +58,7 @@ import {
 import { SystemMonitor } from "./SystemMonitor";
 import { SshConnections } from "./SshConnections";
 import { TerminalPane } from "./TerminalPane";
+import { usePaneHost } from "../usePaneHost";
 
 type Leaf = Pane & { kind: "leaf" };
 type PaneDropTarget = { id: string; edge: DropEdge } | null;
@@ -300,6 +301,19 @@ function PaneViewSwitch({ leaf }: { leaf: Leaf }) {
   );
 }
 
+/**
+ * A machine-wide view (activity monitor, agent usage) on the host its pane
+ * was opened from. If that SSH pane has closed there is no connection to read
+ * through, so say so rather than fall back to this machine's numbers.
+ */
+function MachinePane({ paneId, view }: { paneId: string; view: "monitor" | "usage" }) {
+  const { t } = useI18n();
+  const host = usePaneHost(paneId);
+  if (host.kind === "closed") return <div className="sysmon-empty">{t("pane.hostClosed", { host: host.label })}</div>;
+  const ssh = host.kind === "ssh" ? host : undefined;
+  return view === "monitor" ? <SystemMonitor ssh={ssh} /> : <AgentUsage ssh={ssh} />;
+}
+
 /** The header bar of a pane: drag handle, editable name, view + magnify + close. */
 function PaneHeader({
   leaf,
@@ -491,11 +505,11 @@ function PaneSlot({
         ) : leaf.view === "git" ? (
           <GitDiffView session={remoteSession ?? leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
         ) : leaf.view === "monitor" ? (
-          <SystemMonitor />
+          <MachinePane paneId={leaf.id} view="monitor" />
         ) : leaf.view === "history" ? (
           <AgentHistory paneId={leaf.id} autoFocus={focused} />
         ) : leaf.view === "usage" ? (
-          <AgentUsage />
+          <MachinePane paneId={leaf.id} view="usage" />
         ) : leaf.view === "providers" ? (
           <ProviderPane />
         ) : (

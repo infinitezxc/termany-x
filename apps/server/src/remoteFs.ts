@@ -216,7 +216,7 @@ export function remoteSh(
   sshArgs: string[],
   script: string,
   args: string[],
-  options: { input?: string; maxBytes?: number } = {},
+  options: { input?: string; maxBytes?: number; timeoutMs?: number } = {},
 ): Promise<Buffer> {
   return run(sshArgs, script, args, { maxBytes: 16 * 1024 * 1024, ...options });
 }
@@ -225,19 +225,26 @@ function run(
   sshArgs: string[],
   script: string,
   args: string[],
-  options: { input?: string; maxBytes: number },
+  options: { input?: string; maxBytes: number; timeoutMs?: number },
 ): Promise<Buffer> {
   // The host enforces the same timeout, so a killed client frees its session.
-  const command = remoteShCommand(script, args, SSH_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? SSH_TIMEOUT_MS;
+  const command = remoteShCommand(script, args, timeoutMs);
+  // A caller's own budget counts from the call, including any wait for a
+  // slot: the queued request leaves the queue when it runs out. The default
+  // gives each command its full time once it runs.
+  const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+  const signal = options.timeoutMs === undefined ? undefined : AbortSignal.timeout(options.timeoutMs);
   // A burst of parallel calls (a git overview across worktrees) queues for
   // the connection's channels rather than having its opens refused.
-  return acquireChannel(sshArgs).then((slot) => runNow(sshArgs, command, options, slot));
+  return acquireChannel(sshArgs, { signal }).then((slot) =>
+    runNow(sshArgs, command, deadline === undefined ? options : { ...options, timeoutMs: Math.max(0, deadline - Date.now()) }, slot));
 }
 
 function runNow(
   sshArgs: string[],
   command: string,
-  options: { input?: string; maxBytes: number },
+  options: { input?: string; maxBytes: number; timeoutMs?: number },
   slot: ChannelSlot,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -250,7 +257,7 @@ function runNow(
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
-    }, SSH_TIMEOUT_MS);
+    }, options.timeoutMs ?? SSH_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > options.maxBytes) {
@@ -297,8 +304,8 @@ export async function remoteListSession(sshArgs: string[], fallback: string): Pr
 }
 
 /** The interactive shell's live cwd, else `fallback`, else $HOME. */
-export async function remoteSessionCwd(sshArgs: string[], fallback: string): Promise<string> {
-  const out = (await remoteSh(sshArgs, `${CD_SESSION} pwd`, [fallback])).toString("utf8").trim();
+export async function remoteSessionCwd(sshArgs: string[], fallback: string, timeoutMs?: number): Promise<string> {
+  const out = (await remoteSh(sshArgs, `${CD_SESSION} pwd`, [fallback], { timeoutMs })).toString("utf8").trim();
   if (!out.startsWith("/")) throw new Error("unexpected directory from remote host");
   return out;
 }

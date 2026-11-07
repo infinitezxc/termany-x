@@ -213,8 +213,8 @@ export async function tmuxSessionAgent(args: string[], name: string): Promise<Se
   return SESSION_AGENTS.includes(label as SessionAgent) ? label as SessionAgent : legacyAgent(name);
 }
 
-export async function tmuxSessionCwd(args: string[], name: string): Promise<string> {
-  const output = await remoteSh(args, CHECK + 'tmux display-message -p -t "$1" "#{pane_current_path}"', [paneTarget(name)]);
+export async function tmuxSessionCwd(args: string[], name: string, timeoutMs?: number): Promise<string> {
+  const output = await remoteSh(args, CHECK + 'tmux display-message -p -t "$1" "#{pane_current_path}"', [paneTarget(name)], { timeoutMs });
   const cwd = output.toString().trimEnd();
   if (!cwd.startsWith("/")) throw new Error("Cannot resolve the tmux session directory");
   return cwd;

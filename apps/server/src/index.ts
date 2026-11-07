@@ -2319,7 +2319,10 @@ async function resolveSpawnCwd(
   followForeground = false,
 ): Promise<string> {
   const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
-  for (const source of (cwdFrom ?? "").split(",").filter(Boolean).slice(0, 8)) {
+  for (const source of spawnSources(cwdFrom)) {
+    // An SSH session's local process sits wherever ssh was started; its
+    // directory says nothing about this machine.
+    if (source.includes(":ssh:")) continue;
     const pty = ptySessions.get(source)?.pty;
     const live = await dirIfValid(
       pty ? await (followForeground ? paneCwd(pty.pid) : cwdForPid(pty.pid)) : undefined,
@@ -2333,6 +2336,46 @@ async function resolveSpawnCwd(
     if (saved) return saved;
   }
   return fallback;
+}
+
+function spawnSources(cwdFrom: string | null): string[] {
+  return (cwdFrom ?? "").split(",").filter(Boolean).slice(0, 8);
+}
+
+const REMOTE_SPAWN_DIR_TIMEOUT_MS = 3000;
+
+/**
+ * The remote counterpart of resolveSpawnCwd: the first live SSH session in
+ * `cwdFrom` on the same host supplies its shell's (or tmux session's) current
+ * directory. Undefined falls back to the profile's directory. All lookups
+ * share one deadline, and each remote command is killed (here and on the
+ * host) when it runs out, so a slow host delays the new shell by at most
+ * REMOTE_SPAWN_DIR_TIMEOUT_MS in total and leaves nothing running.
+ */
+async function resolveRemoteSpawnDir(
+  cwdFrom: string | null,
+  sessionId: string | null,
+  sshTarget: string,
+): Promise<string | undefined> {
+  const deadline = Date.now() + REMOTE_SPAWN_DIR_TIMEOUT_MS;
+  for (const source of spawnSources(cwdFrom)) {
+    const left = deadline - Date.now();
+    if (left <= 0) return undefined;
+    if (source === sessionId || !source.includes(":ssh:")) continue;
+    const session = ptySessions.get(source);
+    if (session?.sshTarget !== sshTarget) continue;
+    try {
+      const remote = remoteFsFor(source);
+      if (!remote) continue;
+      const dir = session.tmuxSession
+        ? await tmuxSessionCwd(remote.args, session.tmuxSession, left)
+        : await remoteSessionCwd(remote.args, remoteDirForConnection(sshTarget) ?? "", left);
+      if (dir) return dir;
+    } catch {
+      /* not connected, timed out or failed: try the next source */
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -2511,6 +2554,13 @@ wss.on("connection", async (ws: WebSocket, req) => {
     }
   });
 
+  // A new SSH shell opened from another pane on the same host starts in that
+  // pane's live remote directory rather than the profile's start directory.
+  const startDir = sshTarget && !tmuxSession
+    ? await resolveRemoteSpawnDir(url.searchParams.get("cwdFrom"), sessionId, sshTarget)
+    : undefined;
+  if (closed) return;
+
   let sshArgs: string[] | undefined;
   let sshConnectionArgs: string[] | undefined;
   let sshControlPath = "";
@@ -2529,7 +2579,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
       // of hanging on TCP, so the browser can reattach the session.
       sshArgs = tmuxSession
         ? ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-t", ...sshArgs, tmuxAttachCommand(tmuxSession)]
-        : sshInteractiveArgsForConnection(sshTarget, sshArgs, true);
+        : sshInteractiveArgsForConnection(sshTarget, sshArgs, true, startDir);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

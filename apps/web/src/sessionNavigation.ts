@@ -85,7 +85,8 @@ export async function openSessionPane(options: {
     });
     return before.id;
   }
-  const id = store.addPane("terminal", destination.title, sourcePaneId, destination);
+  // The destination names its host; without one it is this machine.
+  const id = store.addPane("terminal", destination.title, sourcePaneId, { ...destination, local: !destination.sshTarget });
   if (!id) throw new Error(translate(getLanguage(), "tmux.noRoom"));
   return id;
 }

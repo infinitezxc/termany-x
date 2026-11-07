@@ -23,7 +23,7 @@ import {
   remoteWatch,
   remoteWatchDirs,
 } from "./remoteFs.js";
-import { remoteShCommand } from "./remoteCommand.js";
+import { acquireChannel, remoteShCommand, type ChannelSlot } from "./remoteCommand.js";
 
 /** A stand-in `ssh` on PATH that runs the remote command line with /bin/sh. */
 function withFakeSsh(fn: (root: string) => Promise<void>): () => Promise<void> {
@@ -74,6 +74,24 @@ test("remote commands end on the host at their deadline", async () => {
   assert.deepEqual([quick.stdout, quick.code], ["[a b]\n", 3]);
   assert.ok(quick.ms < 900, `took ${quick.ms} ms`);
   assert.ok(!remoteShCommand("true", [], 1000).includes("!"), "csh would history-expand !");
+});
+
+test("a command with its own timeout gives up while still queued for a channel", async () => {
+  // Never reaches ssh: every channel on this connection stays taken.
+  const conn = ["-o", "ControlPath=/nonexistent", "termany-queue-test"];
+  const held: ChannelSlot[] = [];
+  for (let i = 0; i < 8; i++) held.push(await acquireChannel(conn));
+  try {
+    const started = Date.now();
+    await assert.rejects(remoteSh(conn, "true", [], { timeoutMs: 150 }));
+    assert.ok(Date.now() - started < 1000, "rejected at its deadline, not when a channel freed");
+    // It left the queue: a freed channel goes to the next request.
+    held.pop()!.release();
+    const next = await acquireChannel(conn);
+    next.release();
+  } finally {
+    held.forEach((slot) => slot.release());
+  }
 });
 
 test("parses GNU and BSD stat listings", () => {

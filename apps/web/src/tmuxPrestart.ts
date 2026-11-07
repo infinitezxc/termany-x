@@ -1,6 +1,6 @@
 import { isDemo } from "./demo";
 import { isTauri } from "./env";
-import { cwdCandidates, useStore } from "./state/store";
+import { cwdSessionCandidates, useStore } from "./state/store";
 import { takenPages, windowKey } from "./state/windows";
 import { measuredCellSize, prestartSession } from "./terminal/manager";
 import { tmuxPrestartTargets } from "./tmuxPrestartTargets";
@@ -42,7 +42,7 @@ export async function prestartTmuxPanes() {
     prestartSession(target.paneId, {
       sshTarget: target.sshTarget,
       tmuxSession: target.tmuxSession,
-      cwdFrom: cwdCandidates(latest, target.paneId),
+      cwdFrom: cwdSessionCandidates(latest, target.paneId),
       size,
     });
     await wait(STAGGER_MS);

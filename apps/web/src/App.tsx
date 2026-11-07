@@ -117,7 +117,7 @@ export function App() {
   const setUserProfile = useStore((state) => state.setUserProfile);
 
   const installAgent = useCallback((agentName: string, command: string) => {
-    const paneId = useStore.getState().addPane("terminal", `${agentName} Install`);
+    const paneId = useStore.getState().addPane("terminal", `${agentName} Install`, undefined, { local: true });
     if (!paneId) return false;
     queueCommandWhenShellReady(paneId, command);
     setSettingsSection(null);

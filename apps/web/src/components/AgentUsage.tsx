@@ -3,7 +3,6 @@ import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { UsageSelect } from "./Select";
 import { useI18n } from "../i18n";
-import { focusedSshHost, useStore } from "../state/store";
 import { ChartIcon } from "./icons";
 import { tildify } from "../tildify";
 
@@ -121,7 +120,8 @@ const MAX_CHART_DAYS = 31;
  * everything else. Opened from an SSH pane, it shows that host's usage — its
  * agents run there (same as AgentHistory).
  */
-export function AgentUsage() {
+/** `ssh` is the host to report on (see usePaneHost); undefined for this machine. */
+export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }) {
   const { t } = useI18n();
   const agentConfigs = useAgentConfigs();
   const [rows, setRows] = useState<UsageRow[] | null | undefined>(undefined);
@@ -129,8 +129,6 @@ export function AgentUsage() {
   const [range, setRange] = useState<RangeKey>("today");
   const [agent, setAgent] = useState("all");
   const [project, setProject] = useState("all");
-  // Frozen at open, so focusing another pane doesn't swap the host mid-use.
-  const [ssh] = useState(() => focusedSshHost(useStore.getState()));
 
   useEffect(() => {
     let cancelled = false;

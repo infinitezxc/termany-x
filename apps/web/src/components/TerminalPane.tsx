@@ -14,7 +14,7 @@ import {
 } from "../terminal/manager";
 import { extractDroppedPaths, subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
 import { reconcileAttachedTerminalFocus } from "../terminal/focusHandoff";
-import { activeHtab, cwdCandidates, useStore } from "../state/store";
+import { activeHtab, cwdSessionCandidates, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
 import { handleSshNaturalExit } from "../sessionNavigation";
 import { ChevronIcon } from "./icons";
@@ -46,7 +46,7 @@ export function TerminalPane({ id, sshTarget, tmuxSession }: { id: string; sshTa
     attachSession(
       sessionId,
       host,
-      cwdCandidates(state, id),
+      cwdSessionCandidates(state, id),
       sshTarget,
       id,
       tmuxSession,

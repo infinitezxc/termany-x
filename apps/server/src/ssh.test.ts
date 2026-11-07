@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sshArgsForProfile, sshArgsForTarget, sshProfileFieldsForTarget, sshRemoteDirCommand } from "./ssh.js";
+import { sshArgsForProfile, sshArgsForTarget, sshInteractiveArgsForConnection, sshProfileFieldsForTarget, sshRemoteDirCommand } from "./ssh.js";
 
 test("passes aliases and user destinations directly to OpenSSH", () => {
   assert.deepEqual(sshArgsForTarget("production"), ["production"]);
@@ -84,4 +84,17 @@ test("remote directory command opens the directory before the login shell", () =
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("an interactive SSH shell can start in a directory shared from another pane", () => {
+  const args = ["user@host"];
+  assert.deepEqual(sshInteractiveArgsForConnection("user@host", args), args);
+  assert.deepEqual(
+    sshInteractiveArgsForConnection("user@host", args, false, "/srv/app"),
+    ["-t", "user@host", sshRemoteDirCommand("/srv/app")],
+  );
+  assert.deepEqual(
+    sshInteractiveArgsForConnection("user@host", args, true, "/srv/app"),
+    ["-t", "user@host", sshRemoteDirCommand("/srv/app", true)],
+  );
 });

@@ -299,6 +299,7 @@ export default {
   "pane.view.providers": "Model gateway",
   "pane.openInBrowser": "Open {url} in browser",
   "pane.servedUrls": "Open a port this pane is serving",
+  "pane.hostClosed": "The SSH pane this view was opened from ({host}) is closed. Open it again from a pane on that host.",
   "portForward.open": "Port forwarding",
   "portForward.title": "Port forwarding — {host}",
   "portForward.remotePort": "Remote port",

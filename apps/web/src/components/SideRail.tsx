@@ -38,7 +38,7 @@ export function SideRail({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t } = useI18n();
 
   const openPane = (view: PaneView) => {
-    const paneId = addPane(view, undefined, undefined, { inheritSsh: true });
+    const paneId = addPane(view);
     if (paneId) return;
     const focused = activeHtab(useStore.getState())?.focused;
     if (focused) setPaneView(focused, view);

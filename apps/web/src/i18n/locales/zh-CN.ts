@@ -299,6 +299,7 @@ export default {
   "pane.view.providers": "模型网关",
   "pane.openInBrowser": "在浏览器中打开 {url}",
   "pane.servedUrls": "打开此窗格监听的端口",
+  "pane.hostClosed": "打开此视图的 SSH 窗格（{host}）已关闭。请从该主机上的窗格重新打开。",
   "portForward.open": "端口映射",
   "portForward.title": "端口映射 — {host}",
   "portForward.remotePort": "远程端口",

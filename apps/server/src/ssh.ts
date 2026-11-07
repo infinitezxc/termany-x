@@ -82,8 +82,14 @@ export function sshArgsForConnection(value: string): string[] {
  * directory. Kept apart from the connection args because the port-forwarding
  * control and probe commands reuse those and must not inherit a remote command.
  */
-export function sshInteractiveArgsForConnection(value: string, args: string[], trackForeground = false): string[] {
-  const remoteDir = remoteDirForConnection(value);
+export function sshInteractiveArgsForConnection(
+  value: string,
+  args: string[],
+  trackForeground = false,
+  /** Start here instead of the profile's directory (e.g. the source pane's live cwd). */
+  dir?: string,
+): string[] {
+  const remoteDir = dir || remoteDirForConnection(value);
   if (trackForeground) return ["-t", ...args, sshRemoteDirCommand(remoteDir ?? "", true)];
   return remoteDir ? ["-t", ...args, sshRemoteDirCommand(remoteDir)] : args;
 }

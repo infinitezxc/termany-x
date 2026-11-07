@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useNativeOccluder } from "../nativeViewOcclusion";
-import { focusedSshHost, useStore } from "../state/store";
 import { ActivityIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -207,7 +206,8 @@ function ProcessRow({
  * never see both while a build runs. Polls /api/system-stats while mounted.
  * Opened from an SSH pane, it monitors that host instead (fixed at open).
  */
-export function SystemMonitor() {
+/** `ssh` is the host to report on (see usePaneHost); undefined for this machine. */
+export function SystemMonitor({ ssh }: { ssh?: { label: string; session: string } }) {
   const { t } = useI18n();
   const [stats, setStats] = useState<SystemStats | null | undefined>(undefined);
   const [query, setQuery] = useState("");
@@ -222,7 +222,6 @@ export function SystemMonitor() {
   const [detail, setDetail] = useState<ProcessDetail | null>(null);
   const [detailHistory, setDetailHistory] = useState<{ cpu: number; mem: number }[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [ssh] = useState(() => focusedSshHost(useStore.getState()));
   // Native web/office preview panes paint above the DOM and ignore z-index,
   // so one overlapping this centered dialog would swallow the buttons' clicks.
   const detailBackdropRef = useNativeOccluder<HTMLDivElement>("sysmon-process-detail", detail !== null);
