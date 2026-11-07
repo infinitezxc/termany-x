@@ -6270,7 +6270,8 @@ html.tauri #root {
 }
 .gd-card-body {
   border-radius: 0 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px);
-  overflow-x: auto;
+  /* Lines wrap, so this only rounds the corners; nothing inside is sticky. */
+  overflow: hidden;
 }
 .gd-note {
   padding: 10px 12px;
@@ -6282,7 +6283,11 @@ html.tauri #root {
   font-size: 12px;
   line-height: 1.55;
   tab-size: 4;
-  min-width: max-content;
+}
+/* Offscreen blocks skip layout and paint; the inline contain-intrinsic-size
+   holds their place until the browser has measured them once. */
+.gd-block {
+  content-visibility: auto;
 }
 .gd-load-sentinel {
   height: 1px;
@@ -6290,10 +6295,7 @@ html.tauri #root {
 .gd-line {
   display: flex;
 }
-/* Gutters stay put while the code scrolls sideways, so a long line never
-   leaves you guessing which line number you are on. */
 .gd-ln {
-  position: sticky;
   flex-shrink: 0;
   width: 44px;
   padding: 0 8px 0 0;
@@ -6303,17 +6305,16 @@ html.tauri #root {
   background: inherit;
   user-select: none;
 }
-.gd-ln:first-child {
-  left: 0;
-}
 .gd-ln:nth-child(2) {
-  left: 44px;
   border-right: 1px solid var(--border);
 }
+/* Long lines wrap inside the pane instead of scrolling sideways. */
 .gd-text {
   flex: 1;
+  min-width: 0;
   padding: 0 12px 0 8px;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .gd-line.add {
   background: color-mix(in srgb, #4a9e60 14%, var(--bg));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
@@ -71,6 +71,12 @@ const UNTRACKED_AUTO_EXPAND_COST = 200;
 // Render one viewport-sized tranche, then append more only as the reader nears
 // the end. This keeps opening the panel from synchronously creating a huge DOM.
 const DIFF_RENDER_CHUNK = 300;
+// Lines are grouped into blocks the browser can skip laying out while they are
+// offscreen (content-visibility), and that React never re-renders once drawn.
+const DIFF_BLOCK_LINES = 100;
+// 12px font × 1.55 line-height — the placeholder height of an unrendered block
+// until the browser has measured it once (wrapped lines make it taller).
+const DIFF_LINE_PX = 19;
 
 type LineKind = "add" | "del" | "meta" | "hunk" | "ctx";
 
@@ -207,7 +213,7 @@ function remember(viewId: string, patch: Partial<CachedView>) {
  * parent can batch the small initial set, request only newly expanded files,
  * and refresh every open body under one revision.
  */
-function FileCard({
+const FileCard = memo(function FileCard({
   row,
   diff,
   expanded,
@@ -216,7 +222,7 @@ function FileCard({
   row: GitRow;
   diff: DiffPayload | undefined;
   expanded: boolean;
-  onToggle: () => void;
+  onToggle: (key: string, expanded: boolean) => void;
 }) {
   const { t } = useI18n();
   const skip = row.binary || row.isDir;
@@ -229,7 +235,7 @@ function FileCard({
 
   return (
     <div className={`gd-card ${expanded ? "open" : ""}`}>
-      <button className="gd-card-head" onClick={onToggle} aria-expanded={expanded}>
+      <button className="gd-card-head" onClick={() => onToggle(rowKey(row), expanded)} aria-expanded={expanded}>
         <span className={`gd-chevron ${expanded ? "open" : ""}`}>
           <ChevronIcon dir="right" />
         </span>
@@ -266,17 +272,55 @@ function FileCard({
       )}
     </div>
   );
+}, (prev, next) =>
+  prev.expanded === next.expanded &&
+  prev.onToggle === next.onToggle &&
+  sameRow(prev.row, next.row) &&
+  sameDiff(prev.diff, next.diff));
+
+// A refresh re-reads every row and open body as fresh JSON objects. Comparing
+// by content keeps unchanged cards — and their thousands of lines — untouched.
+function sameRow(a: GitRow, b: GitRow): boolean {
+  return a === b || (
+    a.path === b.path && a.oldPath === b.oldPath && a.section === b.section &&
+    a.status === b.status && a.additions === b.additions && a.deletions === b.deletions &&
+    a.binary === b.binary && a.isDir === b.isDir
+  );
 }
 
-/** Incrementally parse and materialize a long diff as its tail approaches the viewport. */
-function DiffCode({ diff }: { diff: string }) {
+function sameDiff(a: DiffPayload | undefined, b: DiffPayload | undefined): boolean {
+  return a === b || (!!a && !!b && a.diff === b.diff && a.binary === b.binary && a.truncated === b.truncated);
+}
+
+/** A fixed run of lines; memoized so appending more blocks never re-renders it. */
+const DiffBlock = memo(function DiffBlock({ lines }: { lines: DiffLine[] }) {
+  return (
+    <div className="gd-block" style={{ containIntrinsicSize: `auto ${lines.length * DIFF_LINE_PX}px` }}>
+      {lines.map((line, i) => (
+        <div key={i} className={`gd-line ${line.kind}`}>
+          <span className="gd-ln">{line.oldNo ?? ""}</span>
+          <span className="gd-ln">{line.newNo ?? ""}</span>
+          <span className="gd-text">{line.text || " "}</span>
+        </div>
+      ))}
+    </div>
+  );
+});
+
+/** Materialize a long diff in blocks as its tail approaches the viewport. */
+const DiffCode = memo(function DiffCode({ diff }: { diff: string }) {
   const [visible, setVisible] = useState(DIFF_RENDER_CHUNK);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  // Ask for one look-ahead row so we know whether the observer has more work,
-  // without ever allocating objects for the untouched tail of a huge diff.
-  const parsed = useMemo(() => parseDiff(diff, visible + 1), [diff, visible]);
-  const hasMore = parsed.length > visible;
-  const lines = hasMore ? parsed.slice(0, visible) : parsed;
+  // Parsed once per body (the server caps one file's diff at 512 KiB) and cut
+  // into stable blocks, so growing `visible` only adds new blocks.
+  const blocks = useMemo(() => {
+    const parsed = parseDiff(diff);
+    const out: DiffLine[][] = [];
+    for (let i = 0; i < parsed.length; i += DIFF_BLOCK_LINES) out.push(parsed.slice(i, i + DIFF_BLOCK_LINES));
+    return out;
+  }, [diff]);
+  const shownBlocks = Math.ceil(visible / DIFF_BLOCK_LINES);
+  const hasMore = blocks.length > shownBlocks;
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -295,17 +339,11 @@ function DiffCode({ diff }: { diff: string }) {
 
   return (
     <div className="gd-code">
-      {lines.slice(0, visible).map((line, i) => (
-        <div key={i} className={`gd-line ${line.kind}`}>
-          <span className="gd-ln">{line.oldNo ?? ""}</span>
-          <span className="gd-ln">{line.newNo ?? ""}</span>
-          <span className="gd-text">{line.text || " "}</span>
-        </div>
-      ))}
+      {blocks.slice(0, shownBlocks).map((lines, i) => <DiffBlock key={i} lines={lines} />)}
       {hasMore && <div ref={sentinelRef} className="gd-load-sentinel" aria-hidden="true" />}
     </div>
   );
-}
+});
 
 /**
  * Git diff viewer for the repo containing `session`'s cwd. Renders as a pane
@@ -420,6 +458,9 @@ export function GitDiffView({
   );
 
   const expandedRows = useMemo(() => rows.filter(isExpanded), [rows, isExpanded]);
+  const toggleRow = useCallback((key: string, expanded: boolean) => {
+    setCollapsed((c) => ({ ...c, [key]: expanded }));
+  }, []);
   // Identity of the request, so expanding one more card refetches once rather
   // than on every render.
   const expandedKeys = expandedRows.map(rowKey).join("\n");
@@ -580,7 +621,7 @@ export function GitDiffView({
                     row={row}
                     diff={diffs[key]}
                     expanded={expanded}
-                    onToggle={() => setCollapsed((c) => ({ ...c, [key]: expanded }))}
+                    onToggle={toggleRow}
                   />
                 );
               })}
