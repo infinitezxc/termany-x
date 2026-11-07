@@ -4,6 +4,9 @@ import { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor, type EditorSnapshot } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
+import { fileGitBadge, folderGitStatuses } from "../fileGitStatus";
+import { useFileGitBase } from "../useFileGitBase";
+import { useFileGitStatuses } from "../useFileGitStatuses";
 import { apiUrl } from "../api";
 import { writeClipboard } from "../clipboard";
 import { parseMarkdownTable } from "../markdownTable";
@@ -33,6 +36,13 @@ import {
   SourceIcon,
   TrashIcon,
 } from "./icons";
+
+function FileGitStatus({ status, folder = false }: { status?: string; folder?: boolean }) {
+  const badge = fileGitBadge(status);
+  if (!badge) return null;
+  const title = folder ? `Contains changes — ${badge.title}` : badge.title;
+  return <span className="file-git-status" data-git-tone={badge.tone} title={title} aria-label={title}>{folder ? "●" : badge.text}</span>;
+}
 
 /** Base name only (Windows- and Unix-style separators both) — the preview
  *  header shows just this, not the full path (that's still in its title). */
@@ -489,6 +499,8 @@ function FileTreeRow({
   dirs,
   expanded,
   selectedPath,
+  gitStatuses,
+  folderStatuses,
   menuPath,
   renamingPath,
   creating,
@@ -506,6 +518,8 @@ function FileTreeRow({
   dirs: Record<string, DirState>;
   expanded: Set<string>;
   selectedPath: string | null;
+  gitStatuses: Record<string, string>;
+  folderStatuses: Record<string, string>;
   /** The row a context menu is open on — kept highlighted while it is. */
   menuPath: string | null;
   /** The row whose name is being edited in place. */
@@ -522,6 +536,7 @@ function FileTreeRow({
 }) {
   const isOpen = entry.isDir && expanded.has(path);
   const state = dirs[path];
+  const gitStatus = entry.isDir ? folderStatuses[path] ?? gitStatuses[path] : gitStatuses[path];
   const renaming = renamingPath === path;
   const ime = useImeGuard();
 
@@ -575,8 +590,9 @@ function FileTreeRow({
             }}
           />
         ) : (
-          <span className="file-tree-name">{entry.name}</span>
+          <span className="file-tree-name" data-git-tone={fileGitBadge(gitStatus)?.tone}>{entry.name}</span>
         )}
+        <FileGitStatus status={gitStatus} folder={entry.isDir} />
         <span className="file-tree-size">{formatSize(entry.size, entry.isDir)}</span>
         <span className="file-tree-date">{formatDate(entry.mtimeMs)}</span>
       </div>
@@ -608,6 +624,8 @@ function FileTreeRow({
             depth={depth + 1}
             dirs={dirs}
             expanded={expanded}
+            gitStatuses={gitStatuses}
+            folderStatuses={folderStatuses}
             selectedPath={selectedPath}
             menuPath={menuPath}
             renamingPath={renamingPath}
@@ -785,12 +803,14 @@ function FileTabStrip({
   tabs,
   activePath,
   dirtyPaths,
+  gitStatuses,
   onActivate,
   onClose,
 }: {
   tabs: Selected[];
   activePath: string;
   dirtyPaths: Set<string>;
+  gitStatuses: Record<string, string>;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
 }) {
@@ -836,7 +856,8 @@ function FileTabStrip({
             }}
             onMouseLeave={() => confirming && setConfirmPath(null)}
           >
-            <span className="file-preview-tab-name">{basename(tab.path)}</span>
+            <span className="file-preview-tab-name" data-git-tone={fileGitBadge(gitStatuses[tab.path])?.tone}>{basename(tab.path)}</span>
+            <FileGitStatus status={gitStatuses[tab.path]} />
             <button
               className="file-preview-tab-close"
               title={confirming ? "Unsaved changes — click again to discard them" : "Close"}
@@ -957,6 +978,9 @@ function FilePreview({
   runFindRef.current = runFind;
   const showsRendered =
     selected.status === "text" && !selected.truncated && !showSource && hasRenderedView(selected.path);
+  const { content: gitBase, failed: gitBaseFailed } = useFileGitBase(selected.path,
+    visible && selected.status === "text" && !selected.truncated && !showsRendered,
+    remote, selected.loadedAt);
   useEffect(() => {
     if (!visible || selected.status !== "text") return;
     const onFind = (event: Event) => {
@@ -1009,6 +1033,7 @@ function FilePreview({
         <PanelLeftCloseIcon />
       </button>
       {tabStrip}
+      {gitBaseFailed && <span className="file-git-warning" role="status" title="Git comparison could not refresh. Previous highlights are kept until it reconnects.">Git unavailable</span>}
       {selected.status === "text" && !selected.truncated && hasRenderedView(selected.path) && (
         <button
           className="pane-btn"
@@ -1158,6 +1183,7 @@ function FilePreview({
           loadedAt={selected.loadedAt}
           dark={dark}
           readOnly={!!selected.truncated}
+          gitBase={gitBase}
           onDirtyChange={setDirty}
           onSave={(text) => save(selected.path, text)}
           takeRestore={takeRestore}
@@ -1286,6 +1312,10 @@ function FileTreeView({
   const [collapsedFrom, setCollapsedFrom] = useState(initial.collapsedFrom);
   const [tabs, setTabs] = useState(initial.tabs);
   const [activePath, setActivePath] = useState(initial.activePath);
+  const { statuses: gitStatuses, failed: gitStatusFailed } = useFileGitStatuses([
+    ...(root ? [root] : []), ...expanded, ...tabs.map((tab) => dirname(tab.path)),
+  ], remote);
+  const folderStatuses = useMemo(() => folderGitStatuses(gitStatuses), [gitStatuses]);
   const selected = tabs.find((t) => t.path === activePath) ?? null;
   // Tabs with unsaved edits — reported up by each tab's editor.
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
@@ -1902,6 +1932,7 @@ function FileTreeView({
           if (root && !rootError) openEntryMenu(root, null, e.clientX, e.clientY);
         }}
       >
+        {gitStatusFailed && <div className="file-tree-message" role="status">Git status unavailable; retrying. Previous badges are kept.</div>}
         {rootError && <div className="file-tree-message">{rootError}</div>}
         {opError && (
           <div className="file-tree-message file-preview-error" onClick={() => setOpError(null)}>
@@ -1929,6 +1960,8 @@ function FileTreeView({
               depth={0}
               dirs={dirs}
               expanded={expanded}
+              gitStatuses={gitStatuses}
+              folderStatuses={folderStatuses}
               selectedPath={selected?.path ?? null}
               menuPath={entryMenu?.path ?? null}
               renamingPath={renamingPath}
@@ -2184,6 +2217,7 @@ function FileTreeView({
     <FileTabStrip
       tabs={tabs}
       activePath={activePath ?? ""}
+      gitStatuses={gitStatuses}
       dirtyPaths={dirtyPaths}
       onActivate={(path) => commitTabs(tabs, path)}
       onClose={closeTab}

@@ -145,6 +145,152 @@ export async function repoRoot(cwd: string): Promise<string | null> {
   }
 }
 
+// Caches belong to the host, never just the path (SSH hosts can share paths).
+// Only immutable commit/blob data is retained indefinitely, within these bounds.
+const viewerCaches = new WeakMap<GitHost, {
+  directories: Map<string, { root: string; prefix: string; expires: number }>;
+  entries: Map<string, { oid: string; size: number }>;
+  blobs: Map<string, string | null>;
+}>();
+function viewerCache() {
+  const selectedHost = host();
+  let cache = viewerCaches.get(selectedHost);
+  if (!cache) {
+    cache = { directories: new Map(), entries: new Map(), blobs: new Map() };
+    viewerCaches.set(selectedHost, cache);
+  }
+  return cache;
+}
+function cachePut<K, V>(cache: Map<K, V>, key: K, value: V, limit: number) {
+  cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > limit) cache.delete(cache.keys().next().value!);
+}
+async function viewerDirectory(directory: string) {
+  const cache = viewerCache().directories;
+  const cached = cache.get(directory);
+  if (cached && cached.expires > Date.now()) return cached;
+  try {
+    // One command discovers both the physical root and the alias-relative prefix.
+    const out = await git(["rev-parse", "--show-toplevel", "--show-prefix"], directory);
+    const split = out.indexOf("\n");
+    if (split < 0) throw new Error("Invalid Git directory response");
+    const value = { root: host().path.resolve(out.slice(0, split)), prefix: out.slice(split + 1).replace(/\n$/, ""), expires: Date.now() + 30_000 };
+    cachePut(cache, directory, value, 256);
+    return value;
+  } catch (error) {
+    cache.delete(directory);
+    // Do not cache absence: initializing a repo should work on the next refresh.
+    if (/not a git repository/i.test(String(error))) return null;
+    throw error;
+  }
+}
+
+/** Working-tree status for file viewers, independent of branch comparisons.
+ * Resolve each directory so nested repositories and tabs outside the tree work.
+ * Each repository is queried only once; no diffs or line counts are needed. */
+export async function gitFileStatuses(directories: string[]): Promise<Record<string, string>> {
+  const roots = new Map<string, { directory: string; prefix: string }[]>();
+  let failure: unknown;
+  let checked = false;
+  for (const directory of new Set(directories)) {
+    try {
+      const resolved = await viewerDirectory(directory);
+      if (!resolved) {
+        checked = true; // Confirmed outside Git is a successful empty result.
+        continue;
+      }
+      const { root, prefix } = resolved;
+      const aliases = roots.get(root) ?? [];
+      aliases.push({ directory, prefix });
+      roots.set(root, aliases);
+    } catch (error) {
+      // Expanded folders and open tabs can outlive their directory on disk.
+      // One stale path must not prevent other repositories from refreshing.
+      failure ??= error;
+    }
+  }
+  const statuses: Record<string, string> = Object.create(null);
+  for (const [root, aliases] of roots) {
+    let out: string;
+    try {
+      out = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], root);
+      checked = true;
+    } catch (error) {
+      // A cached worktree root may also have disappeared since discovery.
+      for (const { directory } of aliases) viewerCache().directories.delete(directory);
+      failure ??= error;
+      continue;
+    }
+    const records = out.split("\0");
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      if (record.length < 4) continue;
+      const status = record.slice(0, 2);
+      const relative = record.slice(3);
+      statuses[host().path.resolve(root, relative)] = status;
+      for (const { directory, prefix } of aliases) {
+        if (relative.startsWith(prefix)) {
+          statuses[host().path.resolve(directory, relative.slice(prefix.length))] = status;
+        }
+      }
+      // With -z the destination comes first, followed by the original name.
+      if (/[RC]/.test(status)) i++;
+    }
+  }
+  // Preserve the client's last snapshot on a total failure (e.g. SSH offline),
+  // but return partial results when a repository was queried or a directory
+  // was confirmed not to belong to one.
+  if (!checked && failure !== undefined) throw failure;
+  return statuses;
+}
+
+/** Text at HEAD for inline additions in a file viewer. null means no useful
+ * comparison (outside Git, ignored, binary, or too large); an empty string
+ * means a new file. All commands run on the file's host, not the pane cwd. */
+export async function gitFileBase(filePath: string): Promise<string | null> {
+  const resolved = await viewerDirectory(host().path.dirname(filePath));
+  if (!resolved) return null;
+  const { root, prefix } = resolved;
+  const relative = prefix + host().path.basename(filePath);
+  const cache = viewerCache();
+  let head: string | undefined;
+  try {
+    head = (await git(["rev-parse", "--verify", "HEAD"], root)).trim();
+  } catch (error) {
+    if (!/Needed a single revision|unknown revision|ambiguous argument ['"]HEAD/i.test(String(error))) throw error;
+  }
+  const entryKey = `${root}\0${head}\0${relative}`;
+  let entry = cache.entries.get(entryKey);
+  if (!entry && head) {
+    const readEntry = async (name: string) => {
+      const out = await git(["ls-tree", "-l", "-z", head!, "--", `:(literal)${name}`], root);
+      const match = /^\d+ blob ([a-f0-9]+)\s+(\d+)\t/.exec(out);
+      return match ? { oid: match[1], size: Number(match[2]) } : undefined;
+    };
+    entry = await readEntry(relative);
+    if (entry) cachePut(cache.entries, entryKey, entry, 128);
+    else {
+      // Index renames are mutable, so never cache their path mapping by HEAD.
+      const renamed = parseNameStatus(await git(["diff", "--cached", "--name-status", "-z", "--find-renames", head], root))
+        .find((row) => row.path === relative && row.status === "R");
+      if (renamed?.oldPath) entry = await readEntry(renamed.oldPath);
+    }
+  }
+  if (!entry) {
+    const eligible = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", `:(literal)${relative}`], root);
+    return eligible ? "" : null;
+  }
+  // ls-tree supplies the byte size: never download an oversized blob over SSH.
+  if (entry.size > DIFF_CAP) return null;
+  const blobKey = `${root}\0${entry.oid}`;
+  if (cache.blobs.has(blobKey)) return cache.blobs.get(blobKey)!;
+  const content = await git(["cat-file", "blob", entry.oid], root);
+  const value = content.includes("\0") ? null : content;
+  cachePut(cache.blobs, blobKey, value, 32);
+  return value;
+}
+
 async function currentBranch(root: string): Promise<string> {
   // symbolic-ref works on a repo with no commits yet, where rev-parse HEAD
   // would fail outright.

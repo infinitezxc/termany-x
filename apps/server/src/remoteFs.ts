@@ -419,9 +419,15 @@ export async function remoteStream(
 
 const GIT_SCRIPT = 'cd -- "$1" || exit 3; shift; exec git -c core.quotepath=false "$@"';
 
+// Stable host identity lets git.ts cache immutable blobs across requests.
+const gitHosts = new Map<string, GitHost>();
+
 /** git.ts's view of a repo on the SSH host (see withGitHost). */
 export function remoteGitHost(sshArgs: string[]): GitHost {
-  return {
+  const key = JSON.stringify(sshArgs);
+  const cached = gitHosts.get(key);
+  if (cached) return cached;
+  const value: GitHost = {
     git: async (args, cwd) => (await remoteSh(sshArgs, GIT_SCRIPT, [cwd, ...args])).toString("utf8"),
     readHead: (abs, max) =>
       remoteRead(sshArgs, abs, max).then(
@@ -430,6 +436,9 @@ export function remoteGitHost(sshArgs: string[]): GitHost {
       ),
     path: path.posix,
   };
+  gitHosts.set(key, value);
+  if (gitHosts.size > 32) gitHosts.delete(gitHosts.keys().next().value!);
+  return value;
 }
 
 /** Stream local files into an explicit remote directory without touching the PTY. */

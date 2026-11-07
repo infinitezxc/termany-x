@@ -8,6 +8,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import { applyTextInputProps } from "../textInputProps";
+import { gitLineChanges, gitDiffUpdates, setGitBase } from "../fileGitChanges";
 import { createFindPanel } from "./EditorFindPanel";
 
 /** Match the app's own chrome instead of CodeMirror's default white/dark-blue
@@ -56,6 +57,7 @@ export function CodeEditor({
   loadedAt,
   dark,
   readOnly = false,
+  gitBase = null,
   onSave,
   onDirtyChange,
   takeRestore,
@@ -69,6 +71,8 @@ export function CodeEditor({
   /** Blocks edits entirely — for previews that are only a truncated prefix of
    *  a too-large file, where saving would silently discard the rest of it. */
   readOnly?: boolean;
+  /** Last committed text; empty for new files, null when unavailable. */
+  gitBase?: string | null;
   onSave: (text: string) => void;
   onDirtyChange: (dirty: boolean) => void;
   /** Hands over (and forgets) a snapshot from an earlier editor's
@@ -112,6 +116,8 @@ export function CodeEditor({
 
     const extensions = [
       basicSetup,
+      gitLineChanges,
+      gitDiffUpdates,
       search({ top: true, createPanel: createFindPanel }),
       keymap.of([
         indentWithTab,
@@ -178,6 +184,10 @@ export function CodeEditor({
     // the doc only at creation; re-running on every keystroke would fight
     // CodeMirror's own state.
   }, [path, dark, readOnly]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: setGitBase.of(gitBase) });
+  }, [gitBase, path, dark, readOnly]);
 
   // A re-read from disk replaces only the span that actually differs, so the
   // cursor and scroll position stay put around it. This discards any unsaved

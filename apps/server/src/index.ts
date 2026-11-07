@@ -75,7 +75,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiffs, gitOverview, withGitHost, worktreeOverview } from "./git.js";
+import { gitDiffs, gitFileBase, gitFileStatuses, gitOverview, withGitHost, worktreeOverview } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { cwdForPid as nativeCwdForPid } from "./processCwd.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
@@ -1976,6 +1976,37 @@ const http = createServer((req, res) => {
         }
       })
       .catch(fail);
+    return;
+  }
+
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/file-base") {
+    (async () => {
+      const filePath = reqUrl.searchParams.get("path");
+      if (!filePath || filePath.includes("\0")) {
+        json(400, { error: "Expected a file path" });
+        return;
+      }
+      const remote = remoteFsFor(reqUrl.searchParams.get("session"));
+      const read = () => gitFileBase(filePath);
+      json(200, { content: remote ? await withGitHost(remoteGitHost(remote.args), read) : await read() });
+    })().catch(fail);
+    return;
+  }
+
+  // File-view badges use explicit directories, including files opened outside
+  // the terminal cwd. Use the same host routing as the filesystem endpoints.
+  if (req.method === "POST" && reqUrl.pathname === "/api/git/file-status") {
+    readJson(req).then(async (body) => {
+      const directories = body?.directories;
+      if (!Array.isArray(directories) || directories.length > 256 ||
+          directories.some((dir) => typeof dir !== "string" || !dir || dir.includes("\0"))) {
+        json(400, { error: "Expected up to 256 directory paths" });
+        return;
+      }
+      const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
+      const read = () => gitFileStatuses(directories);
+      json(200, { statuses: remote ? await withGitHost(remoteGitHost(remote.args), read) : await read() });
+    }).catch(fail);
     return;
   }
 
