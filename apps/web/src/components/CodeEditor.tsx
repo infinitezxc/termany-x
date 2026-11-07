@@ -10,6 +10,7 @@ import { useEffect, useRef } from "react";
 import { applyTextInputProps } from "../textInputProps";
 import { gitLineChanges, gitDiffUpdates, setGitBase } from "../fileGitChanges";
 import { createFindPanel } from "./EditorFindPanel";
+import { fileMinimap } from "../fileMinimap";
 
 /** Match the app's own chrome instead of CodeMirror's default white/dark-blue
  *  chrome, so the editor reads as part of the pane, not an embedded widget. */
@@ -118,6 +119,7 @@ export function CodeEditor({
       basicSetup,
       gitLineChanges,
       gitDiffUpdates,
+      fileMinimap,
       search({ top: true, createPanel: createFindPanel }),
       keymap.of([
         indentWithTab,

@@ -6900,3 +6900,39 @@ html.tauri #root {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* VS Code–style minimap beside the file viewer's scrollbar (fileMinimap.ts).
+   Its width must match MINIMAP_WIDTH there; the content padding below is
+   that width plus a small gap. */
+.code-editor .cm-minimap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 80px;
+  display: none;
+  z-index: 3;
+  cursor: default;
+  user-select: none;
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--fg-dim) 18%, transparent);
+  /* Hidden until scrolling or a resting pointer reveals it (fileMinimap.ts);
+     it still takes pointer events so hovering the strip can reveal it. */
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+.code-editor .cm-minimap.cm-minimap-active {
+  opacity: 1;
+  transition-duration: 0.08s;
+}
+.code-editor .cm-minimap.cm-minimap-visible {
+  display: block;
+}
+.code-editor .cm-minimap canvas {
+  display: block;
+}
+.code-editor .cm-minimap-probe {
+  display: none;
+}
+/* Keep text from wrapping under the minimap while it is shown. */
+.code-editor .cm-editor:has(> .cm-minimap-visible) .cm-content {
+  padding-right: 84px;
+}
