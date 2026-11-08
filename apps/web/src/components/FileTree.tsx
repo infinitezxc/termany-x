@@ -1004,7 +1004,13 @@ function FilePreview({
   }, [draftKey, isDirty, selected.path]);
   // Markdown opens straight into the editor — it's usually opened to be
   // edited; the toolbar toggle still flips it to the rendered preview.
-  const [showSource, setShowSource] = useState(() => isMarkdownPath(selected.path));
+  // The last mode chosen for this file outlives the instance (page switch,
+  // remount), so it comes back the way it was left.
+  const modeKey = `${draftKey}\0${selected.path}`;
+  const [showSource, setShowSource] = useState(() => viewModes.get(modeKey) ?? isMarkdownPath(selected.path));
+  useEffect(() => {
+    viewModes.set(modeKey, showSource);
+  }, [modeKey, showSource]);
   // A draft is source edits — reopen on the source, not a rendered view.
   // Checked once mounted: on a remount, the old editor only hands its draft
   // over after this one's render.
@@ -1306,6 +1312,9 @@ const stateCache = new Map<string, FileTreeState>();
  * files view forgets that one, and must not forget unsaved edits with it.
  */
 const drafts = new Map<string, Map<string, EditorSnapshot>>();
+
+/** Source-vs-rendered mode per file, by stateCache key + path — see FilePreview. */
+const viewModes = new Map<string, boolean>();
 
 function putDraft(key: string, path: string, snapshot: EditorSnapshot) {
   let byPath = drafts.get(key);
