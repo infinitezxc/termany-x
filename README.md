@@ -45,6 +45,13 @@ and lists what it finds.
 
 ![Terminal sessions in one window](docs/sessions.png)
 
+Codex and Claude sessions started or resumed through Termany use tmux on SSH
+hosts and locally when tmux is installed. They stay running when a pane detaches
+or the Termany server restarts, and can be reopened from the session picker with
+scrollback restored. Ordinary terminals remain plain shells; without local tmux,
+agent launches keep using the pane's shell. Existing shell-based agents are not
+moved into tmux automatically.
+
 ## Review in the same window
 
 Any pane can switch from a shell to another view. ⌘E cycles the views:

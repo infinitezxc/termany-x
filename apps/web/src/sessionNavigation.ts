@@ -33,7 +33,7 @@ export function showPane(location: PaneLocation) {
 }
 
 /** The pane already attached to a host's tmux session, if any. */
-export const findTmuxPane = (sshTarget: string, tmuxSession: string): PaneLocation | undefined =>
+export const findTmuxPane = (sshTarget: string | undefined, tmuxSession: string): PaneLocation | undefined =>
   sessionPanes().find(p => p.leaf.sshTarget === sshTarget && p.leaf.tmuxSession === tmuxSession)?.location;
 
 /** Whether replacing a pane would end an agent: tmux keeps its agents running on detach. */
@@ -67,7 +67,7 @@ export async function openSessionPane(options: {
 }): Promise<string> {
   const { mode, sourcePaneId, destination } = options;
   const store = useStore.getState();
-  const shown = destination.sshTarget && destination.tmuxSession
+  const shown = destination.tmuxSession
     ? findTmuxPane(destination.sshTarget, destination.tmuxSession)
     : undefined;
   if (shown) {
@@ -92,7 +92,7 @@ export async function openSessionPane(options: {
 }
 
 /** Finishing an agent releases its tmux attachment and opens a fresh host shell. */
-export async function handleSshNaturalExit(paneId: string, exit: { sshTarget: string; tmuxSession?: string }) {
+export async function handleSshNaturalExit(paneId: string, exit: { sshTarget?: string; tmuxSession?: string }) {
   const action = sshExitAction(findSessionPane(paneId), exit);
   if (action.kind === "local") useStore.getState().setPaneSshTarget(paneId);
   else if (action.kind === "host") await openSessionPane({ mode: "switch", sourcePaneId: paneId, destination: action.destination });

@@ -83,7 +83,7 @@ export interface Session {
   ended: boolean;
   /** Start a replacement backend after an ended remote session is selected. */
   restart?: () => void;
-  /** Pending automatic reattach of a tmux session whose SSH link dropped. */
+  /** Pending automatic reattach of a tmux session after its connection drops. */
   reconnectTimer: number | null;
   /** Consecutive automatic reattach attempts, for backoff. */
   reconnectAttempts: number;
@@ -94,6 +94,7 @@ export interface Session {
   contentVersion: number;
   /** Set when this session's shell is an OpenSSH destination. */
   sshTarget?: string;
+  tmuxSession?: string;
   /** Recent PTY output used to recognize Codex's compact startup probe. */
   defaultColorProbeTail: string;
   /** OSC 10/11 replies withheld from a one-shot Codex palette probe. */
@@ -236,9 +237,9 @@ export function terminalConnectionStatus(
   return sessions.get(terminalSessionId(paneId, sshTarget))?.connectionState ?? "idle";
 }
 
-export function subscribeSshNaturalExit(paneId: string, listener: (exit: { sshTarget: string; tmuxSession?: string }) => void | Promise<void>): () => void {
+export function subscribeSshNaturalExit(paneId: string, listener: (exit: { sshTarget?: string; tmuxSession?: string }) => void | Promise<void>): () => void {
   const onExit = (event: Event) => {
-    const detail = (event as CustomEvent<{ paneId: string; sshTarget: string; tmuxSession?: string }>).detail;
+    const detail = (event as CustomEvent<{ paneId: string; sshTarget?: string; tmuxSession?: string }>).detail;
     if (detail?.paneId !== paneId) return;
     Promise.resolve(listener(detail)).catch(error => {
       const session = sessions.get(terminalSessionId(paneId, detail.sshTarget));
@@ -930,7 +931,7 @@ function deliverTerminalInput(
   data: string,
   isSubmit = true
 ) {
-  if (sshTarget && session.ended) {
+  if ((sshTarget || session.tmuxSession) && session.ended) {
     if (/[\r\n]/.test(data)) {
       term.write("\r\n");
       session.restart?.();
@@ -1595,7 +1596,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       event.stopPropagation();
       const live = sessions.get(id);
       if (live) {
-        if (!(sshTarget && live.ended)) appSelection = null;
+        if (!((sshTarget || tmuxSession) && live.ended)) appSelection = null;
         deliverTerminalInput(id, live, live.term, sshTarget, SHIFT_ENTER_DATA, false);
       }
       return false;
@@ -1700,9 +1701,10 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     reconnectAttempts: 0,
     presized: false,
     ended: false,
-    connectionState: sshTarget ? "connecting" : undefined,
+    connectionState: sshTarget || tmuxSession ? "connecting" : undefined,
     contentVersion: 0,
     sshTarget,
+    tmuxSession,
     defaultColorProbeTail: "",
     blockedDefaultColorReplies: 0,
     blockedDefaultColorRepliesUntil: 0,
@@ -1728,7 +1730,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         session.blockedDefaultColorRepliesUntil = Date.now() + 1_000;
       }
       session.defaultColorProbeTail = probeWindow;
-      if (sshTarget && session.connectionState !== "connected") {
+      if ((sshTarget || tmuxSession) && session.connectionState !== "connected") {
         session.connectionState = "connected";
         notifyConnectionStatus();
       }
@@ -1746,7 +1748,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     b.onExit((reason, exit, detail) => {
       if (session.backend !== b) return;
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
-      if (sshTarget) {
+      if (sshTarget || tmuxSession) {
         session.ended = true;
         session.connectionState = "disconnected";
         notifyConnectionStatus();
@@ -1838,7 +1840,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     }
     // Any keystroke may move or clear the app's selection; mouse reports
     // (hover, wheel) leave it alone.
-    if (!(sshTarget && session.ended) && !data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
+    if (!((sshTarget || tmuxSession) && session.ended) && !data.startsWith("\x1b[<") && !data.startsWith("\x1b[M")) appSelection = null;
     deliverTerminalInput(id, session, term, sshTarget, data);
   });
 
@@ -2109,7 +2111,7 @@ export function attachSession(
   }
   owned.add(id);
   const s = getSession(id, cwdFrom, sshTarget, paneId, tmuxSession);
-  if (sshTarget && s.ended) s.restart?.();
+  if ((sshTarget || tmuxSession) && s.ended) s.restart?.();
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly

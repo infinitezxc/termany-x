@@ -1,6 +1,6 @@
 import { parseIdentityOutput, TMUX_IDENTITY_SCRIPT, transcriptIdentity } from "./tmuxIdentity.js";
 import { randomInt } from "node:crypto";
-import { remoteSh } from "./remoteFs.js";
+import { tmuxSh, type TmuxHost } from "./tmuxHost.js";
 import { shellQuote } from "./remoteCommand.js";
 import { remoteAgentSessionsById } from "./agentSessions.js";
 import { UUID } from "./uuid.js";
@@ -115,8 +115,8 @@ function legacyAgent(name: string): SessionAgent | undefined {
  * running wins over the ID recorded at launch, which goes stale when the user
  * resumes or clears inside the agent.
  */
-export async function listTmux(args: string[]): Promise<TmuxSession[]> {
-  const sessions = parseTmuxSessions((await remoteSh(args, LIST_SCRIPT, [LIST_FORMAT])).toString());
+export async function listTmux(args: TmuxHost): Promise<TmuxSession[]> {
+  const sessions = parseTmuxSessions((await tmuxSh(args, LIST_SCRIPT, [LIST_FORMAT])).toString());
   for (const session of sessions) {
     const agent = session.agent ?? legacyAgent(session.name);
     if (agent) session.agent = agent;
@@ -124,7 +124,7 @@ export async function listTmux(args: string[]): Promise<TmuxSession[]> {
   const probed = sessions.filter(s => s.agent && Number.isSafeInteger(s.panePid) && s.panePid! > 1);
   if (!probed.length) return sessions;
   const identities = parseIdentityOutput(
-    (await remoteSh(args, TMUX_IDENTITY_SCRIPT, probed.map(s => String(s.panePid)))).toString(),
+    (await tmuxSh(args, TMUX_IDENTITY_SCRIPT, probed.map(s => String(s.panePid)))).toString(),
   );
   for (const session of probed) {
     const actual = transcriptIdentity(identities.get(session.panePid!) ?? "", session.agent!);
@@ -139,13 +139,13 @@ export async function listTmux(args: string[]): Promise<TmuxSession[]> {
  * this host's transcripts apart in the parse cache. A failed lookup only
  * costs the labels.
  */
-export async function listTmuxWithConversations(args: string[], hostKey: string): Promise<TmuxSession[]> {
+export async function listTmuxWithConversations(args: TmuxHost, hostKey: string): Promise<TmuxSession[]> {
   const sessions = await listTmux(args);
   await Promise.all(SESSION_AGENTS.map(async (agent) => {
     const linked = sessions.filter((s) => s.agent === agent && s.conversationId);
     if (!linked.length) return;
     const found = await remoteAgentSessionsById(
-      (script, scriptArgs) => remoteSh(args, script, scriptArgs), hostKey, agent,
+      (script, scriptArgs) => tmuxSh(args, script, scriptArgs), hostKey, agent,
       linked.map((s) => s.conversationId!),
     ).catch(() => new Map());
     for (const s of linked) {
@@ -159,7 +159,7 @@ export async function listTmuxWithConversations(args: string[], hostKey: string)
   return sessions;
 }
 
-export async function createTmux(args: string[], input: { name: unknown; cwd?: unknown; command?: unknown; agent?: unknown; conversationId?: unknown }) {
+export async function createTmux(args: TmuxHost, input: { name: unknown; cwd?: unknown; command?: unknown; agent?: unknown; conversationId?: unknown }) {
   const name = tmuxName(input.name);
   if (!/^[\p{L}\p{N}_ -]+$/u.test(name) || name.startsWith("-")) throw new Error("Use letters, numbers, spaces, underscores or hyphens for the name");
   const { agent, conversationId } = input;
@@ -177,7 +177,7 @@ export async function createTmux(args: string[], input: { name: unknown; cwd?: u
       ` \\; set-option -t ${target} @termany-conversation ${shellQuote(conversationId ?? "")}`
     : "";
   // $3, when set, is the session's command; without it tmux starts a shell.
-  await remoteSh(args, CHECK +
+  await tmuxSh(args, CHECK +
     'name=$1; d=$2; case "$d" in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac; ' +
     'if [ -n "$3" ]; then set -- "$3"; else set --; fi; ' +
     `tmux new-session -d -s "$name" -c "$d" "$@"${metadata}`,
@@ -185,9 +185,9 @@ export async function createTmux(args: string[], input: { name: unknown; cwd?: u
   return name;
 }
 
-export async function killTmux(args: string[], name: unknown) {
+export async function killTmux(args: TmuxHost, name: unknown) {
   const session = tmuxName(name);
-  await remoteSh(args, KILL_SCRIPT, [sessionTarget(session), paneTarget(session)]);
+  await tmuxSh(args, KILL_SCRIPT, [sessionTarget(session), paneTarget(session)]);
 }
 
 /**
@@ -200,21 +200,21 @@ const HISTORY_SCRIPT = CHECK +
   'case "$info" in 1:0) exit 0;; 1:*) ;; *) echo split; exit 0;; esac; ' +
   'printf "full\\n"; exec tmux capture-pane -p -e -J -S - -E -1 -t "$1"';
 
-export async function tmuxPaneHistory(args: string[], name: string): Promise<string | null> {
-  const output = (await remoteSh(args, HISTORY_SCRIPT, [paneTarget(name)])).toString("utf8");
+export async function tmuxPaneHistory(args: TmuxHost, name: string): Promise<string | null> {
+  const output = (await tmuxSh(args, HISTORY_SCRIPT, [paneTarget(name)])).toString("utf8");
   if (output.startsWith("split")) return null;
   return output.startsWith("full\n") ? output.slice(5) : "";
 }
 
 /** The agent a tmux session was started for: its label, else an older release's name. */
-export async function tmuxSessionAgent(args: string[], name: string): Promise<SessionAgent | undefined> {
-  const output = await remoteSh(args, CHECK + 'tmux display-message -p -t "$1" "#{@termany-agent}"', [paneTarget(name)]);
+export async function tmuxSessionAgent(args: TmuxHost, name: string): Promise<SessionAgent | undefined> {
+  const output = await tmuxSh(args, CHECK + 'tmux display-message -p -t "$1" "#{@termany-agent}"', [paneTarget(name)]);
   const label = output.toString().trim();
   return SESSION_AGENTS.includes(label as SessionAgent) ? label as SessionAgent : legacyAgent(name);
 }
 
-export async function tmuxSessionCwd(args: string[], name: string, timeoutMs?: number): Promise<string> {
-  const output = await remoteSh(args, CHECK + 'tmux display-message -p -t "$1" "#{pane_current_path}"', [paneTarget(name)], { timeoutMs });
+export async function tmuxSessionCwd(args: TmuxHost, name: string, timeoutMs?: number): Promise<string> {
+  const output = await tmuxSh(args, CHECK + 'tmux display-message -p -t "$1" "#{pane_current_path}"', [paneTarget(name)], { timeoutMs });
   const cwd = output.toString().trimEnd();
   if (!cwd.startsWith("/")) throw new Error("Cannot resolve the tmux session directory");
   return cwd;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -118,7 +118,7 @@ test("remote tmux operations work against a real tmux server", skipWithoutTmux, 
   assert.equal(work?.windows, 1);
   assert.equal(work?.agent, "claude");
   assert.equal(work?.conversationId, conversationId);
-  assert.equal(await tmuxSessionCwd([], "work"), root);
+  assert.equal(realpathSync(await tmuxSessionCwd([], "work")), realpathSync(root));
   await killTmux([], "work");
   assert.deepEqual((await listTmux([])).map(s => s.name), ["work two"]);
   await assert.rejects(killTmux([], "missing"), /can't find session|No such tmux session/);
@@ -163,9 +163,10 @@ test("an attach to a session that has ended never sets the entry", skipWithoutTm
   // a failing attach would outlive it, for other clients to pick up.
   const log = path.join(root, "set-option.log");
   await createTmux([], { name: "keep", cwd: "/", command: "sleep 60" });
+  const before = execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString();
   execFileSync("tmux", ["set-hook", "-g", "after-set-option", `run-shell 'echo set >> ${log}'`]);
   assert.throws(() => execFileSync("/bin/sh", ["-c", tmuxAttachCommand("codex-ended")], { stdio: "pipe" }));
   await new Promise((r) => setTimeout(r, 200)); // run-shell runs in the background
   assert.equal(existsSync(log), false);
-  assert.equal(execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString(), "terminal-overrides\n");
+  assert.equal(execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString(), before);
 }));

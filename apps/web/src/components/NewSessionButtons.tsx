@@ -4,7 +4,7 @@ import { useI18n } from "../i18n";
 import { findSessionPane, openSessionPane, showsAgent } from "../sessionNavigation";
 import { useStore } from "../state/store";
 import { queueCommandWhenShellReady, terminalSessionId } from "../terminal/manager";
-import { agentLaunch, createRemoteSession, listRemoteSessions, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
+import { agentLaunch, createRemoteSession, listRemoteSessions, localTmuxAvailable, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
 import { AgentLogo } from "./AgentLogo";
 import { AgentIcon } from "./icons";
 
@@ -12,9 +12,8 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * Icon buttons in a terminal pane's header that start a new agent session.
- * Locally the agent runs in this pane's shell, or in a new pane beside it when
- * the pane already shows an agent. On an SSH pane it starts in a new tmux
- * session on that host, shown in this pane (or beside a running agent).
+ * Agents run in tmux on their host (locally when installed). A new agent
+ * opens beside an existing agent; ordinary local shells remain plain shells.
  */
 export function NewSessionButtons({ paneId }: { paneId: string }) {
   const { t } = useI18n();
@@ -31,7 +30,7 @@ export function NewSessionButtons({ paneId }: { paneId: string }) {
     queueCommandWhenShellReady(id, agentCommand(agent));
   };
 
-  const startRemote = async (agent: AgentConfig, sshTarget: string, sshLabel?: string) => {
+  const startTmux = async (agent: AgentConfig, sshTarget?: string, sshLabel?: string) => {
     const session = terminalSessionId(paneId, sshTarget);
     const mode = showsAgent(paneId, await listRemoteSessions(session).catch(() => [])) ? "new" : "switch";
     const name = await createRemoteSession(session, agentLaunch(agent));
@@ -47,7 +46,8 @@ export function NewSessionButtons({ paneId }: { paneId: string }) {
     setError("");
     try {
       const leaf = findSessionPane(paneId);
-      if (leaf?.sshTarget) await startRemote(agent, leaf.sshTarget, leaf.sshLabel);
+      if (leaf?.sshTarget) await startTmux(agent, leaf.sshTarget, leaf.sshLabel);
+      else if (await localTmuxAvailable()) await startTmux(agent);
       else startLocal(agent);
     } catch (e) {
       setError(errorText(e));

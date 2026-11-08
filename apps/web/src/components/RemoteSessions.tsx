@@ -9,14 +9,14 @@ import { NewPaneIcon, RefreshIcon, SpinnerIcon, TerminalIcon, TrashIcon } from "
 import "./SessionPicker.css";
 
 /**
- * The tmux sessions on an SSH pane's host, with actions to open, create and
+ * The tmux sessions on the pane's local or SSH host, with actions to open, create and
  * end them. Opening shows a session in the picker's pane, or in a new pane;
  * one already open in a pane is shown there instead. The list and the action
  * state belong to the picker, which also resumes history into these sessions.
  */
 export function RemoteSessions({ host, sourcePaneId, remote, action, query = "", onOpened }: {
-  /** `session` is the SSH pane's terminal session, which the tmux API runs through. */
-  host: { session: string; target: string; label?: string };
+  /** `session` identifies the pane and therefore its local or SSH host. */
+  host: { session: string; target?: string; label?: string };
   sourcePaneId?: string;
   remote: RemoteSessionList;
   action: SessionAction;

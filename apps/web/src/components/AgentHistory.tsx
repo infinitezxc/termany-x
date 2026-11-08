@@ -17,7 +17,7 @@ import {
 import { openSessionPane, sessionPanes, showPane } from "../sessionNavigation";
 import type { SessionOpenMode } from "../sessionOpenPolicy";
 import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
-import { agentLaunch, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
+import { agentLaunch, localTmuxAvailable, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
 import { tildify } from "../tildify";
 import { HistoryIcon, NewPaneIcon, TrashIcon } from "./icons";
 import { RemoteSessions } from "./RemoteSessions";
@@ -103,10 +103,10 @@ function formatTokens(n: number): string {
  * The list opens scoped to wherever the focused pane is: the containing repo
  * (grouped by worktree, current one first, deleted worktrees last) or, outside
  * a repo, the pane's directory. Tab flips between that scope and everything.
- * The shared selector combines remote running sessions with history. Choosing
+ * The shared selector combines running sessions with history. Choosing
  * a session shows it in this view's pane; each one not open yet can also open
- * in a new pane (⌘/Ctrl+Enter). One already open is shown where it is. Remote
- * history resumes use tmux automatically, preserving tasks after disconnect.
+ * in a new pane (⌘/Ctrl+Enter). One already open is shown where it is. History
+ * resumes use tmux on SSH hosts and locally when installed.
  */
 export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpened }: { paneId?: string; autoFocus?: boolean; onOpened?: () => void }) {
   const { t } = useI18n();
@@ -156,7 +156,8 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
   const inputRef = useRef<HTMLInputElement>(null);
   // Resumes, opens and the running list's own actions share one busy state and error.
   const action = useSessionAction();
-  const remote = useRemoteSessions(ssh?.session);
+  const tmuxHost = ssh ?? { session: gitSession || "local", label: t("ssh.local") };
+  const remote = useRemoteSessions(tmuxHost.session);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -378,14 +379,14 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
     // next-best home for that conversation. Outside a scope we can't tell
     // which repo it belonged to, so just resume from wherever the shell lands.
     const cwd = s.cwdMissing ? (scope === "scoped" ? scopeInfo?.mainRoot ?? null : null) : s.cwd;
-    if (ssh) {
-      // Remote conversations run in tmux so they survive a dropped link.
-      const run = await resumeOnHost(ssh.session, cfg, { conversationId: s.sessionId, live, cwd });
+    if (ssh || await localTmuxAvailable()) {
+      // Local and remote conversations run in tmux so they survive a dropped link.
+      const run = await resumeOnHost(tmuxHost.session, cfg, { conversationId: s.sessionId, live, cwd });
       if (run.created) await remote.reload();
       await openSessionPane({
         mode, sourcePaneId: historyPaneId,
         destination: {
-          title: title || run.name, sshTarget: ssh.target, sshLabel: ssh.label, tmuxSession: run.name,
+          title: title || run.name, sshTarget: ssh?.target, sshLabel: ssh?.label, tmuxSession: run.name,
           agentSession: run.conversationId ? { agent: agentId, sessionId: run.conversationId } : undefined,
         },
       });
@@ -554,10 +555,10 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
         </div>
         {action.error && <div role="alert" className="session-error">{action.error}</div>}
 
-        {ssh ? (
+        {(ssh || remote.sessions.length > 0 || remote.loading || remote.error) ? (
           <RemoteSessions
-            host={ssh}
-            sourcePaneId={historyPaneId ?? ssh.paneId}
+            host={tmuxHost}
+            sourcePaneId={historyPaneId ?? ssh?.paneId}
             remote={remote}
             action={action}
             query={query}

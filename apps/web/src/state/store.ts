@@ -278,7 +278,7 @@ interface State {
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
   /** Retitle a pane, in any tab, but only while it still shows this tmux session. */
-  setSessionPaneTitle: (leafId: string, session: { sshTarget: string; tmuxSession: string }, title: string) => void;
+  setSessionPaneTitle: (leafId: string, session: { sshTarget?: string; tmuxSession: string }, title: string) => void;
   replacePaneSession: (leafId: string, destination: { title: string; sshTarget?: string; sshLabel?: string; tmuxSession?: string; agentSession?: { agent: string; sessionId: string } }) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;

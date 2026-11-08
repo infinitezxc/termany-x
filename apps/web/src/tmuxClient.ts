@@ -105,3 +105,8 @@ export async function createRemoteSession(session: string, launch: TmuxLaunch): 
 export async function endRemoteSession(session: string, name: string): Promise<void> {
   await post("/api/tmux/kill", { session, name });
 }
+
+/** Local agents use tmux when installed; ordinary shells and unsupported hosts keep their current launch. */
+export async function localTmuxAvailable(): Promise<boolean> {
+  return (await request("/api/tmux/available")).available === true;
+}

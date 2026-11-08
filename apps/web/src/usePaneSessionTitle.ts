@@ -18,7 +18,7 @@ export function usePaneSessionTitle(paneId: string, sshTarget: string | undefine
   const activityId = paneActivityId(paneId, sshTarget);
   const activity = useSyncExternalStore(subscribeAgentActivity, () => agentActivitySnapshot([activityId]));
   const refresh = useCallback(async (isCurrent: () => boolean) => {
-    if (!sshTarget || !tmuxSession) return;
+    if (!tmuxSession) return;
     const sessions = await listRemoteSessions(terminalSessionId(paneId, sshTarget)).catch(() => []);
     const s = sessions.find(s => s.name === tmuxSession);
     const title = s?.title || s?.preview;

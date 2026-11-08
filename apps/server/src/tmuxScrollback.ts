@@ -53,6 +53,12 @@ export class TmuxScrollbackRestorer {
     if (this.pending) this.schedule();
   }
 
+  /** Reattaching paints only the screen; recover history even without a capped scroll. */
+  restoreOnAttach(): void {
+    this.pending = true;
+    this.schedule();
+  }
+
   dispose(): void {
     this.disposed = true;
     clearTimeout(this.timer);
@@ -66,6 +72,7 @@ export class TmuxScrollbackRestorer {
   private async restore(): Promise<void> {
     if (this.disposed) return;
     if (this.fetching) return this.schedule();
+    if (!this.pane.onNormalScreen()) { this.pending = false; return; }
     this.fetching = true;
     const seen = this.chunks;
     try {

@@ -42,12 +42,12 @@ export function sameTerminal(
 export type SshExitAction =
   | { kind: "ignore" }
   | { kind: "local" }
-  | { kind: "host"; destination: { title: string; sshTarget: string; sshLabel?: string } };
+  | { kind: "host"; destination: { title: string; sshTarget?: string; sshLabel?: string } };
 export function sshExitAction(
   pane: { sshTarget?: string; sshLabel?: string; tmuxSession?: string } | undefined,
-  exit: { sshTarget: string; tmuxSession?: string },
+  exit: { sshTarget?: string; tmuxSession?: string },
 ): SshExitAction {
   if (!pane || pane.sshTarget !== exit.sshTarget || pane.tmuxSession !== exit.tmuxSession) return { kind: "ignore" };
   if (!exit.tmuxSession) return { kind: "local" };
-  return { kind: "host", destination: { title: pane.sshLabel || exit.sshTarget, sshTarget: exit.sshTarget, sshLabel: pane.sshLabel } };
+  return { kind: "host", destination: { title: pane.sshLabel || exit.sshTarget || "Terminal", sshTarget: exit.sshTarget, sshLabel: pane.sshLabel } };
 }

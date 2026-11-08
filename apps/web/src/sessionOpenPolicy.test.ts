@@ -71,3 +71,14 @@ test("stale SSH exits cannot change a closed pane or a different session", () =>
     assert.deepEqual(sshExitAction(pane, exit), { kind: "ignore" });
   }
 });
+
+
+test("local tmux exits return to a plain local shell and stale exits are ignored", () => {
+  const pane = { tmuxSession: "termany-codex-local" };
+  assert.deepEqual(sshExitAction(pane, pane), {
+    kind: "host", destination: { title: "Terminal", sshTarget: undefined, sshLabel: undefined },
+  });
+  for (const changed of [undefined, {}, { tmuxSession: "other" }, { ...pane, sshTarget: "remote" }]) {
+    assert.deepEqual(sshExitAction(changed, pane), { kind: "ignore" });
+  }
+});

@@ -42,6 +42,7 @@ import {
 } from "./remoteFs.js";
 import { watchLocalDirs, watchLocalFile } from "./fileWatch.js";
 import { SshPortForwarding, stopSshMaster } from "./sshPortForwarding.js";
+import { localTmuxAvailable, localTmuxEnvironment } from "./tmuxHost.js";
 import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxPaneHistory, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
 import { TmuxScrollbackRestorer } from "./tmuxScrollback.js";
 import { bindHost, createRequestGuard, isLoopbackHost } from "./requestGuard.js";
@@ -425,7 +426,7 @@ interface PtySession {
   detachedAt: number | null;
   /** Null is the local login shell; otherwise the OpenSSH destination. */
   sshTarget: string | null;
-  /** The remote tmux session this SSH pane is attached to, if any. */
+  /** The tmux session this pane is attached to, on its local or SSH host. */
   tmuxSession?: string | null;
   /** Local SSH diagnostics stay out of the application's PTY output. */
   sshLogPath?: string;
@@ -464,8 +465,8 @@ const sshPortForwarding = new SshPortForwarding();
 function attachTmuxAgent(sessionId: string, session: PtySession, tmuxSession: string) {
   const first = session.pty.onData(() => {
     first.dispose();
-    const args = sshPortForwarding.execArgs(sessionId);
-    if (!args) return;
+    const args = session.sshTarget ? sshPortForwarding.execArgs(sessionId) : null;
+    if (session.sshTarget && !args) return;
     void tmuxSessionAgent(args, tmuxSession)
       .then((agent) => {
         if (agent && ptySessions.get(sessionId) === session) activityTracker.attachAgent(sessionId, agent);
@@ -479,14 +480,15 @@ function restoreTmuxScrollback(sessionId: string, session: PtySession, tmuxSessi
   const restorer = new TmuxScrollbackRestorer({
     onNormalScreen: () => session.terminal.onNormalScreen(),
     fetchHistory: async () => {
-      const args = sshPortForwarding.execArgs(sessionId);
-      return live() && args ? tmuxPaneHistory(args, tmuxSession) : null;
+      const args = session.sshTarget ? sshPortForwarding.execArgs(sessionId) : null;
+      return live() && (!session.sshTarget || args) ? tmuxPaneHistory(args, tmuxSession) : null;
     },
     replaceScrollback: (history) => session.terminal.replaceScrollback(history),
     replaced: () => { if (live() && isOpen(session.ws)) sendTerminalSnapshot(session, session.ws); },
   });
   session.pty.onData((data) => restorer.noteOutput(data));
   session.pty.onExit(() => restorer.dispose());
+  restorer.restoreOnAttach();
 }
 
 /**
@@ -693,7 +695,9 @@ function wireSession(id: string | undefined, session: PtySession): void {
         .finally(() => { probingRemote = false; });
       return;
     }
-    if (!shellJob) return;
+    // The attach client is not the agent's shell. Its foreground job cannot
+    // tell us when the agent inside tmux has finished. Output/PTY exit still can.
+    if (session.tmuxSession || !shellJob) return;
     try {
       activityTracker.noteForegroundJob(id, session.pty.process || "", shellJob);
     } catch {
@@ -1899,22 +1903,24 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Remote tmux sessions on the host an SSH pane is connected to. `session` is
-  // that pane's terminal session id; it supplies the multiplexed SSH args.
+  // Tmux sessions on the pane's host. SSH ids must resolve to a live connection;
+  // local ids select this machine, including detached sessions after restart.
   // Every failure is a 400 with its message, which the picker shows.
-  const tmuxRoutes: Record<string, (remote: NonNullable<ReturnType<typeof remoteFsFor>>, body: any) => Promise<unknown>> = {
-    "GET /api/tmux": async (remote) => ({ sessions: await listTmuxWithConversations(remote.args, remote.target) }),
+  const tmuxRoutes: Record<string, (remote: ReturnType<typeof remoteFsFor>, body: any) => Promise<unknown>> = {
+    "GET /api/tmux/available": async () => ({ available: await localTmuxAvailable() }),
+    "GET /api/tmux": async (remote) => ({ sessions: !remote && !await localTmuxAvailable() ? [] : await listTmuxWithConversations(remote?.args ?? null, remote?.target ?? "local") }),
     "POST /api/tmux/create": async (remote, body) => {
       // Without an explicit directory, start where the pane currently is.
-      const cwd = body.cwd || (await tmuxPaneDir(body.session, remote))
-        || await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "");
-      const name = await createTmux(remote.args, {
+      const cwd = body.cwd || (remote
+        ? (await tmuxPaneDir(body.session, remote)) || await remoteSessionCwd(remote.args, remoteDirForConnection(remote.target) ?? "")
+        : await sessionCwd(body.session));
+      const name = await createTmux(remote?.args ?? null, {
         name: body.name, cwd, command: body.command, agent: body.agent, conversationId: body.conversationId,
       });
       return { name };
     },
     "POST /api/tmux/kill": async (remote, body) => {
-      await killTmux(remote.args, body.name);
+      await killTmux(remote?.args ?? null, body.name);
       return { ok: true };
     },
   };
@@ -1923,7 +1929,6 @@ const http = createServer((req, res) => {
     (req.method === "GET" ? Promise.resolve({ session: reqUrl.searchParams.get("session") }) : readJson(req))
       .then(async (body) => {
         const remote = remoteFsFor(typeof body?.session === "string" ? body.session : null);
-        if (!remote) throw new Error("Connect to an SSH host first");
         json(200, await tmuxRoute(remote, body));
       })
       .catch((error) => json(400, { error: error instanceof Error ? error.message : String(error) }));
@@ -2162,6 +2167,8 @@ const wss = new WebSocketServer({
 let connCount = 0;
 
 async function cwdForPid(pid: number): Promise<string | undefined> {
+  const session = [...ptySessions.values()].find(s => s.pty.pid === pid && !s.sshTarget && s.tmuxSession);
+  if (session?.tmuxSession) return tmuxSessionCwd(null, session.tmuxSession).catch(() => undefined);
   // Windows has neither /proc nor lsof, so nativeCwdForPid declines and the
   // PTY's own OSC 7 reports (see OSC7_PS_HOOK above) are all there is.
   return (await nativeCwdForPid(pid)) ?? oscCwdByPid.get(pid);
@@ -2609,12 +2616,13 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   let pty: ReturnType<typeof spawn>;
   try {
-    pty = spawn(sshArgs ? "ssh" : SHELL, sshArgs ?? SHELL_ARGS, {
+    const localTmux = !sshArgs && !!tmuxSession;
+    pty = spawn(sshArgs ? "ssh" : localTmux ? "/bin/sh" : SHELL, sshArgs ?? (localTmux ? ["-c", tmuxAttachCommand(tmuxSession!)] : SHELL_ARGS), {
       name: "xterm-256color",
       cols: 80,
       rows: 24,
       cwd,
-      env: ptyEnvironment(process.env, process.platform, sessionId ?? undefined),
+      env: ptyEnvironment(localTmux ? await localTmuxEnvironment() : process.env, process.platform, sessionId ?? undefined),
     });
   } catch (err) {
     // Never let one bad spawn take down the whole server.
