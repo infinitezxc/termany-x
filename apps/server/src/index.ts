@@ -41,7 +41,7 @@ import {
   remoteWatchDirs,
 } from "./remoteFs.js";
 import { watchLocalDirs, watchLocalFile } from "./fileWatch.js";
-import { SshPortForwarding } from "./sshPortForwarding.js";
+import { SshPortForwarding, stopSshMaster } from "./sshPortForwarding.js";
 import { createTmux, killTmux, listTmuxWithConversations, tmuxAttachCommand, tmuxPaneHistory, tmuxSessionAgent, tmuxSessionCwd } from "./tmux.js";
 import { TmuxScrollbackRestorer } from "./tmuxScrollback.js";
 import { bindHost, createRequestGuard, isLoopbackHost } from "./requestGuard.js";
@@ -429,6 +429,8 @@ interface PtySession {
   tmuxSession?: string | null;
   /** Local SSH diagnostics stay out of the application's PTY output. */
   sshLogPath?: string;
+  /** The pane's backgrounded multiplex master, stopped when its ssh exits. */
+  sshMaster?: { connectionArgs: string[]; controlPath: string };
   /** In-band file transfer, wired in wireSession() as the pty is attached. */
   transfer?: TransferPipeline;
   /** Refresh activity from the live foreground job, including after reattach. */
@@ -733,6 +735,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
   session.transfer = transfer;
   session.pty.onData((data) => transfer.fromShell(data));
   session.pty.onExit(({ exitCode, signal }) => {
+    if (session.sshMaster) stopSshMaster(session.sshMaster.connectionArgs, session.sshMaster.controlPath);
     if (session.sshLogPath) {
       let fd: number | undefined;
       try {
@@ -2633,6 +2636,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     sshTarget,
     tmuxSession,
     sshLogPath: sshControlPath ? `${sshControlPath}.log` : undefined,
+    sshMaster: sshControlPath && sshConnectionArgs ? { connectionArgs: sshConnectionArgs, controlPath: sshControlPath } : undefined,
   };
   if (sessionId) ptySessions.set(sessionId, session);
   else ephemeralSessions.add(session);

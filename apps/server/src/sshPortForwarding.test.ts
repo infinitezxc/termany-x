@@ -47,13 +47,23 @@ test("adds an explicit control master without changing the destination", () => {
     "-o",
     "ControlMaster=yes",
     "-o",
-    "ControlPersist=no",
+    "ControlPersist=10",
     "-S",
     "/tmp/control",
     "-p",
     "2222",
     "dev@example.com",
   ]);
+});
+
+test("each spawn of a pane gets its own control socket", { skip: process.platform === "win32" }, () => {
+  // A pane returning to a host shell reuses its session id while the previous
+  // master may still be closing; sharing its socket would disable multiplexing.
+  const forwarding = new SshPortForwarding();
+  const first = forwarding.prepare("pane:ssh:dev", "dev", ["dev"]).controlPath;
+  const second = forwarding.prepare("pane:ssh:dev", "dev", ["dev"]).controlPath;
+  assert.ok(first && second);
+  assert.notEqual(first, second);
 });
 
 test("binds forwarded ports to local loopback through the existing master", () => {

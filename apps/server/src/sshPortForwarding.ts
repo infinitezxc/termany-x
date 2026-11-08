@@ -52,7 +52,22 @@ export function parseRemoteListeningPorts(output: string): number[] {
   return [...ports].sort((a, b) => a - b);
 }
 
-/** Add a short, private OpenSSH multiplex socket to the interactive session. */
+/**
+ * How long a pane's master stays up once nothing uses it. Only a backstop:
+ * the server stops the master as soon as the pane's ssh exits.
+ */
+const MASTER_IDLE_SECONDS = 10;
+
+/**
+ * Add a short, private OpenSSH multiplex socket to the interactive session.
+ *
+ * ControlPersist moves the master into the background, so the pane's own ssh
+ * is just a client of it and exits as soon as its remote command does. A
+ * foreground master would wait for every multiplexed command, and it accepts
+ * new ones even after its session has ended. The file tree's watchers and
+ * the port probe then keep it running indefinitely: the pane goes on showing
+ * tmux's `[exited]` (or the shell's last prompt) and never reports the exit.
+ */
 export function sshMasterArgs(args: string[], controlPath: string): string[] {
   return [
     // The interactive SSH process owns forwarding channels too. Its diagnostics
@@ -62,11 +77,22 @@ export function sshMasterArgs(args: string[], controlPath: string): string[] {
     "-o",
     "ControlMaster=yes",
     "-o",
-    "ControlPersist=no",
+    `ControlPersist=${MASTER_IDLE_SECONDS}`,
     "-S",
     controlPath,
     ...args,
   ];
+}
+
+/** Ask a backgrounded master to close now. Fails quietly when it is already gone. */
+export function stopSshMaster(connectionArgs: string[], controlPath: string): void {
+  if (!controlPath) return;
+  execFile(
+    "ssh",
+    ["-o", "BatchMode=yes", "-S", controlPath, "-O", "exit", ...connectionArgs],
+    { timeout: SSH_TIMEOUT_MS },
+    () => {},
+  );
 }
 
 /** Build a multiplex control request without invoking a shell. */
@@ -104,9 +130,13 @@ function sshExecArgs(session: SshPortSession): string[] {
   ];
 }
 
+// Each spawn gets its own socket: a pane that reconnects or returns to a host
+// shell reuses its session id while the previous master may still be closing,
+// and ssh disables multiplexing when its socket path is taken.
+let controlPathSerial = 0;
 function controlPathFor(sessionId: string, target: string): string {
   mkdirSync(CONTROL_DIR, { recursive: true, mode: 0o700 });
-  const key = createHash("sha256").update(`${sessionId}\0${target}`).digest("hex").slice(0, 20);
+  const key = createHash("sha256").update(`${sessionId}\0${target}\0${++controlPathSerial}`).digest("hex").slice(0, 20);
   return `${CONTROL_DIR}/${key}`;
 }
 
