@@ -54,7 +54,9 @@ const paneTarget = (name: string) => `${sessionTarget(name)}:`;
  * output tmux scrolls off lands in xterm's scrollback (the alternate screen
  * has none: the wheel becomes arrow keys). `indn@` keeps tmux scrolling with
  * linefeeds, which xterm keeps; it drops lines scrolled by `CSI n S`. Other
- * sessions keep the alternate screen for full-screen programs.
+ * sessions keep the alternate screen for full-screen programs, Codex among
+ * them: it draws full screen by default, and drawn onto the normal screen its
+ * redraws would reach the scrollback rather than the wheel reaching Codex.
  *
  * tmux reads overrides only when a client attaches, and runs one command's
  * parts back to back, so setting the entry, attaching and removing it in one
@@ -63,12 +65,13 @@ const paneTarget = (name: string) => `${sessionTarget(name)}:`;
  * random and well below 2^32, where tmux wraps to the user's low indexes; one
  * in use is left alone. Old tmux fails the check and attaches as before.
  *
- * $1 session target, $2 pane target, $3 set for a legacy agent name, $4 index.
+ * $1 session target, $2 pane target, $3 a legacy name's agent, $4 index.
  * One line: csh-family shells reject newlines inside quotes.
  */
 const ATTACH_SCRIPT = [
   `slot="terminal-overrides[$4]"; o='*:smcup@:rmcup@:indn@'`,
-  `if [ -z "$3" ] && [ -z "$(tmux display-message -p -t "$2" '#{@termany-agent}' 2>/dev/null)" ]; then exec tmux attach-session -t "$1"; fi`,
+  `a=$(tmux display-message -p -t "$2" '#{@termany-agent}' 2>/dev/null); [ -n "$a" ] || a=$3`,
+  `case "$a" in ""|codex) exec tmux attach-session -t "$1";; esac`,
   `v=$(tmux show-options -sv "$slot" 2>/dev/null) && [ -z "$v" ] || exec tmux attach-session -t "$1"`,
   `tmux has-session -t "$1" \\; set-option -s "$slot" "$o" \\; attach-session -t "$1" \\; set-option -su "$slot"; s=$?`,
   `[ "$(tmux show-options -sv "$slot" 2>/dev/null)" = "$o" ] && tmux set-option -su "$slot"`,
@@ -77,7 +80,7 @@ const ATTACH_SCRIPT = [
 
 /** The command an SSH pane runs on the host to attach to a session. */
 export function tmuxAttachCommand(name: string, slot = randomInt(1_000_000, 2_000_000_000)): string {
-  const args = [ATTACH_SCRIPT, "sh", sessionTarget(name), paneTarget(name), legacyAgent(name) ? "1" : "", String(slot)];
+  const args = [ATTACH_SCRIPT, "sh", sessionTarget(name), paneTarget(name), legacyAgent(name) ?? "", String(slot)];
   return `exec sh -c ${args.map(shellQuote).join(" ")}`;
 }
 export function parseTmuxSessions(output: string): TmuxSession[] {
@@ -174,7 +177,10 @@ export async function createTmux(args: TmuxHost, input: { name: unknown; cwd?: u
   const target = shellQuote(paneTarget(name));
   const metadata = agent
     ? ` \\; set-option -t ${target} @termany-agent ${shellQuote(agent as string)}` +
-      ` \\; set-option -t ${target} @termany-conversation ${shellQuote(conversationId ?? "")}`
+      ` \\; set-option -t ${target} @termany-conversation ${shellQuote(conversationId ?? "")}` +
+      // Codex asks for mouse reporting only when tmux's mouse is on; with it,
+      // the wheel reaches Codex and scrolls its transcript by line.
+      (agent === "codex" ? ` \\; set-option -t ${target} mouse on` : "")
     : "";
   // $3, when set, is the session's command; without it tmux starts a shell.
   await tmuxSh(args, CHECK +

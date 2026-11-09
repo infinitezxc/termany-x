@@ -56,14 +56,14 @@ test("local tmux survives server restart, restores history, tracks cwd and relea
   try {
     await start();
     assert.equal((await api("/api/tmux/available")).available, true);
-    await api("/api/tmux/create", { session: "local-pane", name, cwd, agent: "codex", command: "exec /bin/sh" });
+    await api("/api/tmux/create", { session: "local-pane", name, cwd, agent: "claude", command: "exec /bin/sh" });
     const pid = inspect("#{pane_pid}");
     const first = connect();
     await until(() => first.ws.readyState === WebSocket.OPEN && inspect("#{session_attached}") === "1", "local client attaches");
     first.ws.send(JSON.stringify({ type: "input", data: "printf 'LOCAL_AGENT_READY\\n'; i=0; while [ $i -lt 100 ]; do echo SCROLLBACK_$i; i=$((i+1)); done\r" }));
     await until(() => first.output().includes("SCROLLBACK_99"), "agent emits history");
     const sessions = (await api("/api/tmux?session=local-pane")).sessions;
-    assert.ok(sessions.some((s: any) => s.name === name && s.agent === "codex"));
+    assert.ok(sessions.some((s: any) => s.name === name && s.agent === "claude"));
     assert.equal((await api("/api/fs/list?session=local-pane")).path, cwd);
     // An attached session cannot be deleted through the picker.
     const denied = await fetch(base + "/api/tmux/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: "local-pane", name }) });

@@ -38,7 +38,7 @@ test("a burst taller than the screen is restored from the pane's history", skipW
   const reopened = new xterm.Terminal({ allowProposedApi: true, scrollback: 5000 });
   let pty: ReturnType<typeof spawnClient> | undefined;
   try {
-    await createTmux([], { name: "agent", cwd: "/", command: "sleep 0.5; seq 1 300; sleep 60", agent: "codex" });
+    await createTmux([], { name: "agent", cwd: "/", command: "sleep 0.5; seq 1 300; sleep 60", agent: "claude" });
     state.resize(80, 24);
     const detector = new CappedScrollDetector();
     let capped = false;

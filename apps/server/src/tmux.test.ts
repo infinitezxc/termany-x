@@ -39,7 +39,7 @@ test("tmux names reject control characters and ambiguous target separators", () 
   // The name reaches the script as an argument, never as script text.
   assert.match(tmuxAttachCommand("work's $(echo unsafe)", 5),
     / 'sh' '=work'\\''s \$\(echo unsafe\)' '=work'\\''s \$\(echo unsafe\):' '' '5'$/);
-  assert.match(tmuxAttachCommand("codex-1", 5), / 'sh' '=codex-1' '=codex-1:' '1' '5'$/);
+  assert.match(tmuxAttachCommand("codex-1", 5), / 'sh' '=codex-1' '=codex-1:' 'codex' '5'$/);
   // Each attach has its own slot.
   assert.notEqual(tmuxAttachCommand("work"), tmuxAttachCommand("work"));
 });
@@ -124,22 +124,27 @@ test("remote tmux operations work against a real tmux server", skipWithoutTmux, 
   await assert.rejects(killTmux([], "missing"), /can't find session|No such tmux session/);
 }));
 
-test("only agent sessions attach on the normal screen, and only their own client", skipWithoutTmux, () => withTmuxServer(async () => {
+test("only inline agent sessions attach on the normal screen, and only their own client", skipWithoutTmux, () => withTmuxServer(async () => {
   const overrides = () => execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString();
-  await createTmux([], { name: "agent", cwd: "/", command: "sleep 60", agent: "codex" });
+  await createTmux([], { name: "agent", cwd: "/", command: "sleep 60", agent: "claude" });
+  await createTmux([], { name: "full", cwd: "/", command: "sleep 60", agent: "codex" });
   execFileSync("tmux", ["set-option", "-s", "terminal-overrides[0]", "mine:foo"]);
   await createTmux([], { name: "plain", cwd: "/", command: "sleep 60" });
   const agent = await attachOnce("agent", tmuxAttachCommand("agent"));
   assert.ok(agent.includes("\x1b[?25h"), "the client drew the session");
   assert.ok(!onAlternateScreen(agent));
   assert.ok(onAlternateScreen(await attachOnce("plain", tmuxAttachCommand("plain"))));
+  assert.ok(onAlternateScreen(await attachOnce("full", tmuxAttachCommand("full"))), "Codex draws full screen");
+  const mouse = (session: string) => execFileSync("tmux", ["display-message", "-p", "-t", `=${session}:`, "#{mouse}"]).toString().trim();
+  assert.equal(mouse("full"), "1", "Codex reports the wheel only with tmux's mouse on");
+  assert.equal(mouse("agent"), "0");
 
   // No other client attaches while the entry exists: under load, every
   // Termany client is on the normal screen, and every other client is not.
   const load = Array.from({ length: 8 }, (_, i) => i);
   for (const i of load) {
-    await createTmux([], { name: `ours ${i}`, cwd: "/", command: "sleep 60", agent: "codex" });
-    await createTmux([], { name: `theirs ${i}`, cwd: "/", command: "sleep 60", agent: "codex" });
+    await createTmux([], { name: `ours ${i}`, cwd: "/", command: "sleep 60", agent: "claude" });
+    await createTmux([], { name: `theirs ${i}`, cwd: "/", command: "sleep 60", agent: "claude" });
   }
   for (let round = 0; round < 3; round++) {
     const [ours, theirs] = await Promise.all([
@@ -165,7 +170,7 @@ test("an attach to a session that has ended never sets the entry", skipWithoutTm
   await createTmux([], { name: "keep", cwd: "/", command: "sleep 60" });
   const before = execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString();
   execFileSync("tmux", ["set-hook", "-g", "after-set-option", `run-shell 'echo set >> ${log}'`]);
-  assert.throws(() => execFileSync("/bin/sh", ["-c", tmuxAttachCommand("codex-ended")], { stdio: "pipe" }));
+  assert.throws(() => execFileSync("/bin/sh", ["-c", tmuxAttachCommand("claude-ended")], { stdio: "pipe" }));
   await new Promise((r) => setTimeout(r, 200)); // run-shell runs in the background
   assert.equal(existsSync(log), false);
   assert.equal(execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString(), before);
