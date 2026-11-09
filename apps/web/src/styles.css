@@ -960,6 +960,13 @@ html.tauri #root {
   background: var(--accent-soft);
   color: var(--fg);
 }
+/* The tab being dragged to a new place in the order rides above the others. */
+.history-tab.dragging {
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 2px 8px rgb(0 0 0 / .25);
+  cursor: grabbing;
+}
 .history-tab-icon {
   width: 16px;
   height: 16px;

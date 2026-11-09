@@ -1,5 +1,6 @@
 import { textInputProps } from "../textInputProps";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { shellQuote } from "../agentCommand";
 import { useAgentConfigs, type AgentConfig } from "../agents";
 import { apiPath } from "../api";
@@ -17,7 +18,9 @@ import {
 import { openSessionPane, sessionPanes, showPane } from "../sessionNavigation";
 import type { SessionOpenMode } from "../sessionOpenPolicy";
 import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
-import { agentLaunch, localTmuxAvailable, matchingTmux, resumeOnHost, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
+import { agentLaunch, localTmuxAvailable, matchingTmux, resumeOnHost, sessionAgentLabel, type SessionAgent } from "../tmuxClient";
+import { loadSessionAgentOrder, moveSessionAgent, saveSessionAgentOrder } from "../sessionAgentOrder";
+import { beginDragCursor, endDragCursor } from "../dragGhost";
 import { tildify } from "../tildify";
 import { HistoryIcon, NewPaneIcon, TrashIcon } from "./icons";
 import { RemoteSessions } from "./RemoteSessions";
@@ -113,10 +116,12 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
   const ime = useImeGuard();
   const workspaces = useStore((s) => s.workspaces);
   const agentConfigs = useAgentConfigs();
-  const agents = SESSION_AGENTS
-    .map(({ id }) => agentConfigs.find((agent) => agent.id === id && agent.enabled))
+  // The agent tabs' order is the user's, set by dragging a tab; the first one opens selected.
+  const [agentOrder, setAgentOrder] = useState(loadSessionAgentOrder);
+  const agents = agentOrder
+    .map((id) => agentConfigs.find((agent) => agent.id === id && agent.enabled))
     .filter((agent): agent is AgentConfig => agent !== undefined);
-  const [selectedAgentId, setAgentId] = useState("codex");
+  const [selectedAgentId, setAgentId] = useState<string>(() => agentOrder[0]);
   const agentId = agents.find((agent) => agent.id === selectedAgentId)?.id ?? agents[0]?.id ?? "codex";
   // list key ("agent" or "agent|scoped") → paged sessions; null = unsupported.
   const [byKey, setByKey] = useState<Record<string, SessionPageState>>({});
@@ -428,6 +433,78 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
     inputRef.current?.focus();
   };
 
+  // A dragged tab follows the pointer within the row while the tabs it passes
+  // slide aside; on release it settles into its slot and the order is saved.
+  const tabDragged = useRef(false);
+  const startTabDrag = (id: SessionAgent, e: ReactPointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const { pointerId, clientX: x, clientY: y } = e;
+    const self = e.currentTarget;
+    const tabs = [...self.parentElement!.querySelectorAll<HTMLElement>("[data-history-agent]")];
+    const rects = tabs.map((tab) => tab.getBoundingClientRect());
+    const from = tabs.indexOf(self);
+    const mid = (r: DOMRect) => r.left + r.width / 2;
+    // How far the passed tabs shift: the dragged tab's width plus the gap after it.
+    const step = rects[from].width + (parseFloat(getComputedStyle(self.parentElement!).columnGap) || 0);
+    let active = false;
+    let to = from;
+    tabDragged.current = false;
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!active) {
+        if (Math.hypot(ev.clientX - x, ev.clientY - y) < 4) return;
+        active = true;
+        self.classList.add("dragging");
+        tabs.forEach((tab) => { if (tab !== self) tab.style.transition = "transform .15s ease"; });
+        beginDragCursor();
+      }
+      ev.preventDefault();
+      const dx = Math.min(Math.max(ev.clientX - x, rects[0].left - rects[from].left), rects.at(-1)!.right - rects[from].right);
+      self.style.transform = `translateX(${dx}px)`;
+      // A tab is passed once the dragged tab's leading edge crosses its middle;
+      // its center couldn't reach a narrower tab's middle within the row.
+      const left = rects[from].left + dx, right = rects[from].right + dx;
+      to = from;
+      rects.forEach((r, i) => {
+        if (i > from && right > mid(r)) to = i;
+        if (i < from && left < mid(r) && to === from) to = i;
+      });
+      tabs.forEach((tab, i) => {
+        if (tab === self) return;
+        const shift = i > from && i <= to ? -step : i < from && i >= to ? step : 0;
+        tab.style.transform = shift ? `translateX(${shift}px)` : "";
+      });
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      endDragCursor();
+      if (!active) return;
+      tabDragged.current = true;
+      if (ev.type !== "pointerup") to = from;
+      // Commit the order synchronously, then animate the dragged tab from where
+      // it was dropped into its new slot; the others are already in place.
+      const dropped = self.getBoundingClientRect().left;
+      if (to !== from) {
+        const next = moveSessionAgent(agentOrder, id, tabs[to].dataset.historyAgent as SessionAgent);
+        flushSync(() => setAgentOrder(next));
+        saveSessionAgentOrder(next);
+      }
+      tabs.forEach((tab) => { tab.style.transition = ""; tab.style.transform = ""; });
+      self.style.transform = `translateX(${dropped - self.getBoundingClientRect().left}px)`;
+      void self.offsetWidth;
+      self.style.transition = "transform .15s ease";
+      self.style.transform = "";
+      // A timer rather than transitionend: a tab dropped exactly in its slot doesn't transition.
+      setTimeout(() => { self.style.transition = ""; self.classList.remove("dragging"); }, 150);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
   const switchScope = (next: "scoped" | "all") => {
     setScope(next);
     inputRef.current?.focus();
@@ -572,7 +649,13 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
             <button
               key={a.id}
               className={`history-tab ${a.id === agentId ? "active" : ""}`}
-              onClick={() => switchAgent(a.id)}
+              data-history-agent={a.id}
+              onPointerDown={(e) => startTabDrag(a.id as SessionAgent, e)}
+              onClick={() => {
+                // The click that ends a drag doesn't also switch tabs.
+                if (tabDragged.current) { tabDragged.current = false; return; }
+                switchAgent(a.id);
+              }}
             >
               <span>{sessionAgentLabel(a.id)}</span>
             </button>
