@@ -1,5 +1,5 @@
 import { apiPath } from "./api";
-import { buildAgentCommand, shellQuote } from "./agentCommand";
+import { buildAgentCommand, CODEX_COPY_ON_SELECT, shellQuote } from "./agentCommand";
 import { getLanguage, translate } from "./i18n";
 
 export type SessionAgent = "claude" | "codex";
@@ -44,7 +44,7 @@ export function agentLaunch(
         !options.resume || fork ? `--session-id ${shellQuote(conversationId!)}` : "",
         config.args,
       ]
-    : [options.resume ? `resume ${shellQuote(options.resume)}` : "", config.args];
+    : [CODEX_COPY_ON_SELECT, options.resume ? `resume ${shellQuote(options.resume)}` : "", config.args];
   return {
     name: `termany-${config.id}-${conversationId ?? fresh}`, agent: config.id, conversationId,
     command: buildAgentCommand(config.command.trim() || config.id, args.filter(Boolean).join(" ")),

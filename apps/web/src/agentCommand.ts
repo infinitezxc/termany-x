@@ -7,6 +7,10 @@ export function buildAgentCommand(command: string, args: string): string {
   return [command.trim(), args.trim()].filter(Boolean).join(" ");
 }
 
+/** Codex copies a selection it draws on release, as Termany's own selections
+ * do; a drag past the edge of Codex's full-screen view hands it one. */
+export const CODEX_COPY_ON_SELECT = "-c tui.copy_on_select=always";
+
 const GENERATED_AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Older builds used a generated custom-agent id as the fallback command.

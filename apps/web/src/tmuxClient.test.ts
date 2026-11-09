@@ -22,7 +22,7 @@ test("ordinary resumes preserve the conversation ID and Codex creates no invente
   assert.equal(agentLaunch(claude, { resume: original }).conversationId, original);
   const launch = agentLaunch(codex, { newId: fresh });
   assert.equal(launch.conversationId, undefined);
-  assert.equal(launch.command, "codex --model example");
+  assert.equal(launch.command, "codex -c tui.copy_on_select=always --model example");
   assert.equal(agentLaunch(codex, { resume: original }).conversationId, original);
 });
 test("history matches metadata after rename, and never guesses from legacy names", () => {
@@ -44,7 +44,7 @@ test("an unlinked running session never lets two processes share a transcript", 
   assert.equal(resumeFork([session({ agent: "claude" })], "codex", true), false);
 });
 test("an empty configured binary falls back to the agent's own command", () => {
-  assert.equal(agentLaunch({ ...codex, command: " " }, { resume: original }).command, `codex resume '${original}' --model example`);
+  assert.equal(agentLaunch({ ...codex, command: " " }, { resume: original }).command, `codex -c tui.copy_on_select=always resume '${original}' --model example`);
 });
 test("invalid history identifiers cannot enter a launch command", () => {
   assert.throws(() => agentLaunch(codex, { resume: "id'; touch /tmp/no" }), /Invalid/);

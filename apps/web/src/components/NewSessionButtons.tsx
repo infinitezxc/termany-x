@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { agentCommand, useAgentConfigs, type AgentConfig } from "../agents";
+import { agentLaunchCommand, useAgentConfigs, type AgentConfig } from "../agents";
 import { useI18n } from "../i18n";
 import { findSessionPane, openSessionPane, showsAgent } from "../sessionNavigation";
 import { useStore } from "../state/store";
@@ -27,7 +27,7 @@ export function NewSessionButtons({ paneId }: { paneId: string }) {
     const inPlace = !!source && (source.view ?? "terminal") === "terminal" && !source.sshTarget && !showsAgent(source.id);
     const id = inPlace ? source.id : addPane("terminal", agent.name, paneId);
     if (!id) throw new Error(t("tmux.noRoom"));
-    queueCommandWhenShellReady(id, agentCommand(agent));
+    queueCommandWhenShellReady(id, agentLaunchCommand(agent));
   };
 
   const startTmux = async (agent: AgentConfig, sshTarget?: string, sshLabel?: string) => {

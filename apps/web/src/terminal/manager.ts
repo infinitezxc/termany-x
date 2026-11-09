@@ -1,3 +1,4 @@
+import { installCodexSelection } from "./codexSelection";
 import { WebSocketBackend, restoreTerminalSnapshot, STALE_MODE_RESET, type ITerminalBackend, type TerminalSnapshot } from "@termany/core";
 import { getLanguage, translate } from "../i18n";
 import { loadFontConfig } from "../font-config";
@@ -2115,6 +2116,11 @@ export function attachSession(
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
+    let codexSelection: { dispose(): void } | undefined;
+    s.term.loadAddon({
+      activate: term => { codexSelection = installCodexSelection(term, () => activeAgentKind(paneId) === "codex"); },
+      dispose: () => codexSelection?.dispose(),
+    });
     if (s.term.textarea) applyTextInputProps(s.term.textarea);
     // macOS 26.5+ has a WKWebView/Safari WebGL regression that leaves old
     // terminal frames composited over new ones. Canvas 2D is xterm's supported

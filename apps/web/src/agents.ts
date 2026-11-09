@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiPath } from "./api";
-import { buildAgentCommand, normalizeCustomAgentCommand } from "./agentCommand";
+import { buildAgentCommand, CODEX_COPY_ON_SELECT, normalizeCustomAgentCommand } from "./agentCommand";
 import claudeIcon from "./assets/agents/claudecode.svg?url";
 import codexIcon from "./assets/agents/codex.svg?url";
 import cursorIcon from "./assets/agents/cursor.svg?url";
@@ -241,6 +241,11 @@ export async function syncAgentConfigs(): Promise<AgentConfig[]> {
 
 export function agentCommand(agent: AgentConfig) {
   return buildAgentCommand(agent.command, agent.args);
+}
+
+/** The command a new pane runs: the configured one, plus what Termany needs. */
+export function agentLaunchCommand(agent: AgentConfig) {
+  return agent.id === "codex" ? buildAgentCommand(agent.command, `${CODEX_COPY_ON_SELECT} ${agent.args}`) : agentCommand(agent);
 }
 
 export function createCustomAgent(): AgentConfig {
