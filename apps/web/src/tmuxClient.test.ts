@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentLaunch, matchingTmux, resumeFork, type RemoteSession } from "./tmuxClient";
+import { agentLaunch, matchingTmux, resumeFork, tmuxSessionName, type RemoteSession } from "./tmuxClient";
 const original = "12345678-1234-1234-1234-123456789012";
 const fresh = "87654321-4321-4321-4321-210987654321";
 const claude = { id: "claude", command: "claude", args: "--verbose" };
@@ -10,7 +10,7 @@ test("new Claude sessions launch with the exact ID used for metadata", () => {
   const launch = agentLaunch(claude, { newId: fresh });
   assert.equal(launch.conversationId, fresh);
   assert.ok(launch.command.includes(`--session-id '${fresh}'`));
-  assert.ok(launch.name.endsWith(fresh));
+  assert.equal(launch.name, "claude");
 });
 test("Claude forks are tracked under their new ID, never the source ID", () => {
   const launch = agentLaunch(claude, { resume: original, fork: true, newId: fresh });
@@ -48,4 +48,12 @@ test("an empty configured binary falls back to the agent's own command", () => {
 });
 test("invalid history identifiers cannot enter a launch command", () => {
   assert.throws(() => agentLaunch(codex, { resume: "id'; touch /tmp/no" }), /Invalid/);
+});
+test("sessions are named after their page and agent, safe to type", () => {
+  assert.equal(agentLaunch(claude, { page: "API work" }).name, "API-work_claude");
+  assert.equal(tmuxSessionName("api.v2: fixes!", "codex"), "api-v2-fixes_codex");
+  assert.equal(tmuxSessionName("  --日本語--  ", "claude"), "日本語_claude");
+  assert.equal(tmuxSessionName("...", "codex"), "codex");
+  assert.equal(tmuxSessionName(undefined, "codex"), "codex");
+  assert.equal(tmuxSessionName("x".repeat(200), "claude"), `${"x".repeat(60)}_claude`);
 });

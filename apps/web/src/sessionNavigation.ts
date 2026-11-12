@@ -1,6 +1,6 @@
 import { getLanguage, translate } from "./i18n";
 import { replaceAfterRelease, sameTerminal, sessionOpenAction, sshExitAction, type SessionOpenMode } from "./sessionOpenPolicy";
-import { useStore, type Pane, type PaneLocation } from "./state/store";
+import { useStore, type Pane, type PaneLocation, type TreeNode } from "./state/store";
 import { activeAgentKind, disposePaneSessions } from "./terminal/manager";
 
 type Leaf = Extract<Pane, { kind: "leaf" }>;
@@ -24,6 +24,17 @@ export function sessionPanes(workspaces = useStore.getState().workspaces) {
 }
 export const findSessionPane = (paneId: string | undefined): Leaf | undefined =>
   paneId ? sessionPanes().find(p => p.leaf.id === paneId)?.leaf : undefined;
+/** The title of the page a pane is on. */
+export function pageTitleOf(paneId: string | undefined): string | undefined {
+  if (!paneId) return undefined;
+  const nodeId = sessionPanes().find(p => p.leaf.id === paneId)?.location.nodeId;
+  const search = (nodes: TreeNode[]): TreeNode | undefined => {
+    for (const n of nodes) { if (n.id === nodeId) return n; const hit = search(n.children); if (hit) return hit; }
+    return undefined;
+  };
+  for (const ws of useStore.getState().workspaces) { const hit = nodeId && search(ws.roots); if (hit) return hit.title; }
+  return undefined;
+}
 
 /** Bring an existing pane forward. */
 export function showPane(location: PaneLocation) {

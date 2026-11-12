@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { agentLaunchCommand, useAgentConfigs, type AgentConfig } from "../agents";
 import { useI18n } from "../i18n";
-import { findSessionPane, openSessionPane, showsAgent } from "../sessionNavigation";
+import { findSessionPane, openSessionPane, pageTitleOf, showsAgent } from "../sessionNavigation";
 import { useStore } from "../state/store";
 import { queueCommandWhenShellReady, terminalSessionId } from "../terminal/manager";
 import { agentLaunch, createRemoteSession, listRemoteSessions, localTmuxAvailable, SESSION_AGENTS, sessionAgentLabel } from "../tmuxClient";
@@ -33,7 +33,7 @@ export function NewSessionButtons({ paneId }: { paneId: string }) {
   const startTmux = async (agent: AgentConfig, sshTarget?: string, sshLabel?: string) => {
     const session = terminalSessionId(paneId, sshTarget);
     const mode = showsAgent(paneId, await listRemoteSessions(session).catch(() => [])) ? "new" : "switch";
-    const name = await createRemoteSession(session, agentLaunch(agent));
+    const name = await createRemoteSession(session, agentLaunch(agent, { page: pageTitleOf(paneId) }));
     await openSessionPane({
       mode, sourcePaneId: paneId,
       destination: { title: t("tmux.agentSession", { agent: sessionAgentLabel(agent.id) }), sshTarget, sshLabel, tmuxSession: name },

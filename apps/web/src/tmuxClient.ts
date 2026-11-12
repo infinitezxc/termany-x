@@ -19,6 +19,16 @@ export interface RemoteSession {
 export interface TmuxLaunch {
   name: string; command: string; agent: SessionAgent; conversationId?: string; cwd?: string | null;
 }
+/**
+ * A tmux session name for an agent started on a page: "{page}_{agent}". The
+ * host adds _2, _3, ... when the name is taken. Characters tmux or a shell
+ * would trip on become "-", so the name can be typed after `tmux attach -t`.
+ */
+export function tmuxSessionName(page: string | undefined, agent: string): string {
+  const base = (page ?? "").normalize("NFC").replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/-{2,}/g, "-").replace(/^[-_]+|[-_]+$/g, "");
+  return base ? `${Array.from(base).slice(0, 60).join("").replace(/[-_]+$/, "")}_${agent}` : agent;
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const message = (key: string, params?: Record<string, string>) => translate(getLanguage(), key, params);
 
@@ -30,7 +40,7 @@ const message = (key: string, params?: Record<string, string>) => translate(getL
  */
 export function agentLaunch(
   config: { id: string; command: string; args: string },
-  options: { resume?: string; fork?: boolean; newId?: string } = {},
+  options: { resume?: string; fork?: boolean; newId?: string; page?: string } = {},
 ): TmuxLaunch {
   if (config.id !== "claude" && config.id !== "codex") throw new Error(message("sessions.error.unsupportedAgent"));
   if (options.resume && !UUID.test(options.resume)) throw new Error(message("sessions.error.invalidId"));
@@ -46,7 +56,7 @@ export function agentLaunch(
       ]
     : [CODEX_COPY_ON_SELECT, options.resume ? `resume ${shellQuote(options.resume)}` : "", config.args];
   return {
-    name: `termany-${config.id}-${conversationId ?? fresh}`, agent: config.id, conversationId,
+    name: tmuxSessionName(options.page, config.id), agent: config.id, conversationId,
     command: buildAgentCommand(config.command.trim() || config.id, args.filter(Boolean).join(" ")),
   };
 }
@@ -84,13 +94,13 @@ const post = (path: string, body: object) =>
 export async function resumeOnHost(
   session: string,
   config: { id: string; command: string; args: string },
-  options: { conversationId: string; live: boolean; cwd: string | null },
+  options: { conversationId: string; live: boolean; cwd: string | null; page?: string },
 ): Promise<{ name: string; conversationId?: string; created: boolean }> {
   const running = await listRemoteSessions(session);
   const existing = matchingTmux(running, config.id, options.conversationId);
   if (existing) return { name: existing.name, conversationId: existing.conversationId, created: false };
   const launch = agentLaunch(config, {
-    resume: options.conversationId, fork: resumeFork(running, config.id, options.live),
+    resume: options.conversationId, fork: resumeFork(running, config.id, options.live), page: options.page,
   });
   const name = await createRemoteSession(session, { ...launch, cwd: options.cwd });
   return { name, conversationId: launch.conversationId, created: true };

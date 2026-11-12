@@ -15,7 +15,7 @@ import {
   subscribeAgentActivity,
   terminalSessionId,
 } from "../terminal/manager";
-import { openSessionPane, sessionPanes, showPane } from "../sessionNavigation";
+import { openSessionPane, pageTitleOf, sessionPanes, showPane } from "../sessionNavigation";
 import type { SessionOpenMode } from "../sessionOpenPolicy";
 import { useRemoteSessions, useSessionAction } from "../sessionPickerState";
 import { agentLaunch, localTmuxAvailable, matchingTmux, resumeOnHost, sessionAgentLabel, type SessionAgent } from "../tmuxClient";
@@ -386,7 +386,7 @@ export function AgentHistory({ paneId: historyPaneId, autoFocus = false, onOpene
     const cwd = s.cwdMissing ? (scope === "scoped" ? scopeInfo?.mainRoot ?? null : null) : s.cwd;
     if (ssh || await localTmuxAvailable()) {
       // Local and remote conversations run in tmux so they survive a dropped link.
-      const run = await resumeOnHost(tmuxHost.session, cfg, { conversationId: s.sessionId, live, cwd });
+      const run = await resumeOnHost(tmuxHost.session, cfg, { conversationId: s.sessionId, live, cwd, page: pageTitleOf(historyPaneId) });
       if (run.created) await remote.reload();
       await openSessionPane({
         mode, sourcePaneId: historyPaneId,

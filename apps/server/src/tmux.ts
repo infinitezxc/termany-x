@@ -162,6 +162,9 @@ export async function listTmuxWithConversations(args: TmuxHost, hostKey: string)
   return sessions;
 }
 
+/** How far createTmux counts when a name is taken. */
+const MAX_SUFFIX = 99;
+
 export async function createTmux(args: TmuxHost, input: { name: unknown; cwd?: unknown; command?: unknown; agent?: unknown; conversationId?: unknown }) {
   const name = tmuxName(input.name);
   if (!/^[\p{L}\p{N}_ -]+$/u.test(name) || name.startsWith("-")) throw new Error("Use letters, numbers, spaces, underscores or hyphens for the name");
@@ -173,22 +176,27 @@ export async function createTmux(args: TmuxHost, input: { name: unknown; cwd?: u
   if (agent !== undefined && !SESSION_AGENTS.includes(agent as SessionAgent)) throw new Error("Invalid agent");
   if (conversationId !== undefined && (typeof conversationId !== "string" || !UUID.test(conversationId))) throw new Error("Invalid conversation ID");
   // The metadata is set in the same tmux command as the new session, so no
-  // other client can see the session before it is labelled.
-  const target = shellQuote(paneTarget(name));
+  // other client can see the session before it is labelled. $t is the pane
+  // target of the name being tried.
   const metadata = agent
-    ? ` \\; set-option -t ${target} @termany-agent ${shellQuote(agent as string)}` +
-      ` \\; set-option -t ${target} @termany-conversation ${shellQuote(conversationId ?? "")}` +
+    ? ` \\; set-option -t "$t" @termany-agent ${shellQuote(agent as string)}` +
+      ` \\; set-option -t "$t" @termany-conversation ${shellQuote(conversationId ?? "")}` +
       // Codex asks for mouse reporting only when tmux's mouse is on; with it,
       // the wheel reaches Codex and scrolls its transcript by line.
-      (agent === "codex" ? ` \\; set-option -t ${target} mouse on` : "")
+      (agent === "codex" ? ` \\; set-option -t "$t" mouse on` : "")
     : "";
+  // A taken name gets _2, _3, ... Each try is the create itself, so two
+  // requests for one name can never both get it. The name used is printed.
   // $3, when set, is the session's command; without it tmux starts a shell.
-  await tmuxSh(args, CHECK +
-    'name=$1; d=$2; case "$d" in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac; ' +
+  const out = await tmuxSh(args, CHECK +
+    'base=$1; d=$2; case "$d" in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac; ' +
     'if [ -n "$3" ]; then set -- "$3"; else set --; fi; ' +
-    `tmux new-session -d -s "$name" -c "$d" "$@"${metadata}`,
+    'name=$base; i=1; while :; do t="=$name:"; ' +
+    `if err=$(tmux new-session -d -s "$name" -c "$d" "$@"${metadata} 2>&1); then printf "%s\\n" "$name"; exit 0; fi; ` +
+    'case "$err" in *"duplicate session"*) ;; *) printf "%s\\n" "$err" >&2; exit 1;; esac; ' +
+    `i=$((i+1)); [ "$i" -le ${MAX_SUFFIX} ] || { echo "No free tmux session name for $base" >&2; exit 1; }; name=\${base}_$i; done`,
     [name, cwd, command ? `exec "\${SHELL:-/bin/sh}" -lic ${shellQuote(command)}` : ""]);
-  return name;
+  return out.toString("utf8").trim().split("\n").pop() || name;
 }
 
 export async function killTmux(args: TmuxHost, name: unknown) {

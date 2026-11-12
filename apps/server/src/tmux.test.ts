@@ -124,6 +124,18 @@ test("remote tmux operations work against a real tmux server", skipWithoutTmux, 
   await assert.rejects(killTmux([], "missing"), /can't find session|No such tmux session/);
 }));
 
+test("a taken name gets _2, _3, ..., even when created at once", skipWithoutTmux, () => withTmuxServer(async () => {
+  const conversationId = "12345678-1234-1234-1234-123456789012";
+  assert.equal(await createTmux([], { name: "page_claude", cwd: "/", command: "sleep 60", agent: "claude", conversationId }), "page_claude");
+  const names = await Promise.all([0, 1, 2].map(() => createTmux([], { name: "page_claude", cwd: "/", command: "sleep 60", agent: "claude" })));
+  assert.deepEqual([...names].sort(), ["page_claude_2", "page_claude_3", "page_claude_4"]);
+  const sessions = await listTmux([]);
+  assert.deepEqual(sessions.map(s => s.name).sort(), ["page_claude", ...names].sort());
+  assert.ok(sessions.every(s => s.agent === "claude"), "each try labels the session it made");
+  assert.equal(sessions.find(s => s.name === "page_claude")?.conversationId, conversationId);
+  assert.equal(sessions.find(s => s.name === "page_claude_2")?.conversationId, undefined);
+}));
+
 test("only inline agent sessions attach on the normal screen, and only their own client", skipWithoutTmux, () => withTmuxServer(async () => {
   const overrides = () => execFileSync("tmux", ["show-options", "-s", "terminal-overrides"]).toString();
   await createTmux([], { name: "agent", cwd: "/", command: "sleep 60", agent: "claude" });
