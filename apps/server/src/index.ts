@@ -2021,7 +2021,7 @@ const http = createServer((req, res) => {
       const read = async () => {
         const statuses = await gitFileStatuses(directories);
         // Skip the numstat while nothing tracked has changed (the common case).
-        const changed = Object.values(statuses).some((status) => status !== "??");
+        const changed = Object.values(statuses).some((status) => status !== "??" && status !== "!!");
         // A failed numstat omits `totals`, so the client keeps its last value.
         const totals = !totalsFor ? undefined : changed
           ? await gitDirectoryLineTotals(totalsFor).catch(() => undefined)

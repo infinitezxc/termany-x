@@ -4,7 +4,8 @@ const labels: Record<string, string> = {
 };
 
 export function fileGitBadge(status?: string): { text: string; title: string; tone: string } | null {
-  if (!status || status === "  ") return null;
+  // Ignored is not a change: no badge; the name is dimmed instead (gitIgnored).
+  if (!status || status === "  " || status === "!!") return null;
   if (status === "??") return { text: "U", title: "Git: Untracked", tone: "untracked" };
   if (["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(status)) {
     return { text: "!", title: "Git: Merge conflict", tone: "conflict" };
@@ -41,4 +42,16 @@ export function folderGitStatuses(statuses: Record<string, string>): Record<stri
     }
   }
   return folders;
+}
+
+/** Whether `path` is Git-ignored. Git reports an ignored directory once
+ * ("node_modules/") without listing its contents, so ancestors count too. */
+export function gitIgnored(statuses: Record<string, string>, path: string): boolean {
+  let current = path;
+  for (;;) {
+    if (statuses[current] === "!!") return true;
+    const cut = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
+    if (cut <= 0) return false;
+    current = current.slice(0, cut);
+  }
 }

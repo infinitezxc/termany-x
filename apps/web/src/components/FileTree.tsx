@@ -4,7 +4,7 @@ import { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor, type EditorSnapshot } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
-import { fileGitBadge, folderGitStatuses } from "../fileGitStatus";
+import { fileGitBadge, folderGitStatuses, gitIgnored } from "../fileGitStatus";
 import { useFileGitBase } from "../useFileGitBase";
 import { useFileGitStatuses } from "../useFileGitStatuses";
 import { apiUrl } from "../api";
@@ -604,7 +604,7 @@ function FileTreeRow({
   return (
     <>
       <div
-        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""}`}
+        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""} ${gitIgnored(gitStatuses, path) ? "git-ignored" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
         data-drop-folder={entry.isDir ? path : undefined}
         data-drag-file={!entry.isDir && !renaming ? path : undefined}

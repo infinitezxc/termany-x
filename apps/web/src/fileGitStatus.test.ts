@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fileGitBadge, folderGitStatuses } from "./fileGitStatus";
+import { fileGitBadge, folderGitStatuses, gitIgnored } from "./fileGitStatus";
 
 test("file badges distinguish staged, unstaged, untracked and conflicts", () => {
   assert.equal(fileGitBadge(undefined), null);
@@ -44,4 +44,15 @@ test("ancestor folders inherit changes even when collapsed, without matching sib
   assert.equal(folders["/repo/src/deep/new.txt"], undefined);
   assert.deepEqual(folderGitStatuses(Object.fromEntries(Object.entries(statuses).reverse())), folders);
   assert.equal(Object.keys(folderGitStatuses({})).length, 0);
+});
+
+test("ignored paths get no badge, decorate no folder, and cover their contents", () => {
+  const statuses = { "/repo/node_modules": "!!", "/repo/app.log": "!!", "C:\\repo\\dist": "!!" };
+  assert.equal(fileGitBadge("!!"), null);
+  assert.deepEqual({ ...folderGitStatuses(statuses) }, {});
+  assert.equal(gitIgnored(statuses, "/repo/app.log"), true);
+  assert.equal(gitIgnored(statuses, "/repo/node_modules/pkg/index.js"), true);
+  assert.equal(gitIgnored(statuses, "/repo/node_modules-other/x.js"), false);
+  assert.equal(gitIgnored(statuses, "/repo/src/app.ts"), false);
+  assert.equal(gitIgnored(statuses, "C:\\repo\\dist\\main.js"), true);
 });

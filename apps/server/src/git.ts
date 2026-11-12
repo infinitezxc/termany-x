@@ -187,6 +187,8 @@ async function viewerDirectory(directory: string) {
 }
 
 /** Working-tree status for file viewers, independent of branch comparisons.
+ * Ignored paths are reported as "!!"; an ignored directory covers everything
+ * inside it, which the client resolves by ancestor lookup.
  * Resolve each directory so nested repositories and tabs outside the tree work.
  * Each repository is queried only once; no diffs or line counts are needed. */
 export async function gitFileStatuses(directories: string[]): Promise<Record<string, string>> {
@@ -214,7 +216,9 @@ export async function gitFileStatuses(directories: string[]): Promise<Record<str
   for (const [root, aliases] of roots) {
     let out: string;
     try {
-      out = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], root);
+      // "matching" reports an ignored directory once ("dist/") without
+      // descending into it, so node_modules costs one record, not thousands.
+      out = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"], root);
       checked = true;
     } catch (error) {
       // A cached worktree root may also have disappeared since discovery.

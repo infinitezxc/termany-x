@@ -47,7 +47,7 @@ test("file-view statuses preserve index/worktree state and exact paths across re
   await git("init", "--quiet");
   await writeFile(path.join(root, "tracked.txt"), "original\n");
   await writeFile(path.join(root, "old.txt"), "renamed contents\n");
-  await writeFile(path.join(root, ".gitignore"), "ignored.txt\n");
+  await writeFile(path.join(root, ".gitignore"), "ignored.txt\nbuild/\n");
   await git("add", ".");
   await git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial");
   await writeFile(path.join(root, "tracked.txt"), "staged\n");
@@ -58,6 +58,8 @@ test("file-view statuses preserve index/worktree state and exact paths across re
   const unusual = "new dir/中文\nfile.txt";
   await writeFile(path.join(root, unusual), "new\n");
   await writeFile(path.join(root, "ignored.txt"), "ignored\n");
+  await mkdir(path.join(root, "build"));
+  await writeFile(path.join(root, "build", "out.js"), "built\n");
   const nested = path.join(root, "nested");
   await mkdir(nested);
   await execFileAsync("git", ["init", "--quiet"], { cwd: nested });
@@ -68,7 +70,9 @@ test("file-view statuses preserve index/worktree state and exact paths across re
   assert.equal(statuses[path.join(root, "old.txt")], undefined);
   assert.equal(statuses[path.join(root, unusual)], "??");
   assert.equal(statuses[path.join(nested, "fresh.txt")], "??");
-  assert.equal(statuses[path.join(root, "ignored.txt")], undefined);
+  assert.equal(statuses[path.join(root, "ignored.txt")], "!!");
+  assert.equal(statuses[path.join(root, "build")], "!!");
+  assert.equal(statuses[path.join(root, "build", "out.js")], undefined);
   assert.equal(statuses[path.join(root, ".gitignore")], undefined);
   await git("reset", "--hard", "HEAD");
   const after = await gitFileStatuses([root]);
@@ -107,7 +111,7 @@ test("file viewer baseline uses HEAD, handles new/renamed files and ignores non-
   assert.equal(await gitFileBase(file), null);
   await git("init", "--quiet");
   assert.equal(await gitFileBase(file), "");
-  await writeFile(path.join(root, ".gitignore"), "ignored.txt\n");
+  await writeFile(path.join(root, ".gitignore"), "ignored.txt\nbuild/\n");
   await writeFile(path.join(root, "ignored.txt"), "ignored\n");
   await writeFile(path.join(root, "binary"), "binary\0data");
   await git("add", ".");

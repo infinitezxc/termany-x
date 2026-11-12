@@ -3039,9 +3039,16 @@ html.tauri #root {
   padding: 3px 6px;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  color: var(--fg-dim);
+  color: var(--fg);
   user-select: none;
 }
+/* Git-ignored entries (and everything under an ignored folder) recede so
+ * tracked files stand out; hovering still brings the row to full color. */
+.file-tree-row.git-ignored { color: var(--fg-dim); }
+.file-tree-row.git-ignored .file-tree-icon,
+.file-tree-row.git-ignored .file-tree-name { opacity: 0.6; }
+.file-tree-row.git-ignored:hover .file-tree-icon,
+.file-tree-row.git-ignored:hover .file-tree-name { opacity: 0.85; }
 .file-tree-row:hover {
   background: var(--bg-3);
   color: var(--fg);
