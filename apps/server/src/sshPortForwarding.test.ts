@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   parseRemoteListeningPorts,
+  parseUploadedPath,
+  sshUploadControlArgs,
   sshForwardControlArgs,
   sshMasterArgs,
   SshPortForwarding,
@@ -152,4 +154,47 @@ test("rejects invalid local ports and ports another forward already owns", async
   await assert.rejects(forwarding.forward("pane", 3000, 70000), /between 1 and 65535/);
   await forwarding.forward("pane", 3000, 18433);
   await assert.rejects(forwarding.forward("pane", 4000, 18433), /already forwards remote port 3000/);
+});
+
+test("uploads run through the existing master without opening a new one", () => {
+  const args = sshUploadControlArgs(["-p", "2222", "dev@example.com"], "/tmp/control", "paste-1.png");
+  assert.deepEqual(args.slice(0, 9), [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ControlMaster=no",
+    "-S",
+    "/tmp/control",
+    "-p",
+    "2222",
+    "dev@example.com",
+  ]);
+  assert.equal(args.length, 10);
+});
+
+test("upload file names that would need shell quoting are refused", () => {
+  for (const name of ["a b.png", "x;rm -rf ~.png", "it's.png", "../up.png", "$(id).png", ""]) {
+    assert.throws(() => sshUploadControlArgs(["host"], "/tmp/control", name), /invalid remote file name/);
+  }
+});
+
+test("the remote upload script writes stdin and prints the absolute path", { skip: process.platform === "win32" }, () => {
+  const name = `paste-test-${process.pid}-${Date.now()}.png`;
+  const script = sshUploadControlArgs(["host"], "/tmp/control", name).at(-1)!;
+  const payload = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0a, 0x0d]);
+  // sshd hands the command string to the login shell, exactly like this.
+  const stdout = execFileSync("/bin/sh", ["-c", script], { input: payload }).toString("utf8");
+  const remotePath = parseUploadedPath(stdout);
+  try {
+    assert.match(remotePath, new RegExp(`^/tmp/termany-pastes-\\d+/${name}$`));
+    assert.deepEqual(readFileSync(remotePath), payload);
+  } finally {
+    if (remotePath) rmSync(remotePath, { force: true });
+  }
+});
+
+test("an upload that printed no absolute path is not reported as a path", () => {
+  assert.equal(parseUploadedPath(""), "");
+  assert.equal(parseUploadedPath("Welcome banner\n"), "");
+  assert.equal(parseUploadedPath("motd line\n/tmp/termany-pastes-501/p.png"), "/tmp/termany-pastes-501/p.png");
 });
