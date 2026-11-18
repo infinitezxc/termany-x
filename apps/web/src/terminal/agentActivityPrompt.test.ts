@@ -87,6 +87,30 @@ test("Codex stays working while it interrupts or queues input", () => {
   assert.equal(agentBusyScreenVisible(screen("codex-queued-input")), true);
 });
 
+test("an idle composer with background shells or subagents still reads as busy", () => {
+  const idle = screen("claude-idle");
+  for (const footer of [
+    "  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage",
+    "  ⏵⏵ auto mode on (shift+tab to cycle) · 2 shells · ↓ to manage",
+    "  ⏵⏵ auto mode on · 1 local agent · ↓ to manage",
+    "  ⏵⏵ auto mode on · 1 shell, 2 local agents · ↓ to manage",
+    "  3 background tasks · ↓ to manage",
+    "  1 background terminal running · /ps to view · /stop to close",
+  ]) {
+    assert.equal(agentBusyScreenVisible(`${idle}\n${footer}`), true, footer);
+  }
+});
+
+test("prose mentioning shells or agents is not background work", () => {
+  for (const row of [
+    "⏺ I compared 2 shells and found zsh faster.",
+    "You can spawn 3 agents in parallel for this.",
+    "  [Opus 5 (1M context)] ░░░░░░░░░░ 0% | scratchpad | 费用 $0.0000",
+  ]) {
+    assert.equal(agentBusyScreenVisible(row), false, row);
+  }
+});
+
 test("Codex is idle once the answer is on screen", () => {
   assert.equal(agentBusyScreenVisible(screen("codex-answered")), false);
 });

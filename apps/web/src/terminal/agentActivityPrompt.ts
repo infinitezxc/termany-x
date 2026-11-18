@@ -80,6 +80,16 @@ const BUSY_INTERRUPT_RE =
 /** Input that was accepted but not started still owes the user an answer. */
 const BUSY_QUEUED_INPUT_RE =
   /\bqueued\s+(?:follow-?up\s+)?(?:input|message|prompt)s?\b/i;
+/**
+ * Background work the agent's footer still counts: Claude Code's task pill
+ * ("· 1 shell · ↓ to manage", "2 local agents") and Codex's "1 background
+ * terminal running". The agent sits at its composer while these run, but the
+ * task is not finished until they report back, so it must not read as done.
+ * The count has to sit between footer separators (or open/close the row) so
+ * prose such as "spawn 2 agents" in an answer cannot trip it.
+ */
+const BUSY_BACKGROUND_TASK_RE =
+  /(?:^|[·•|,]\s*)\d+\s+(?:shells?|bash(?:es)?|(?:local\s+|background\s+)?agents?|subagents?|background\s+(?:tasks?|terminals?)(?:\s+running)?|monitors?|workflows?)\s*(?:$|[·•|,])/i;
 /** Codex leaves completed tool bullets on screen, truncating them with … too. */
 const COMPLETED_TOOL_ROW_RE =
   /^[•●]\s+(?:ran|explored|edited|added|deleted|updated|read|viewed|searched|listed|opened)\b/i;
@@ -156,6 +166,7 @@ export function agentBusyScreenVisible(visible: string): boolean {
       return true;
     }
     const cleaned = cleanRow(row);
+    if (BUSY_BACKGROUND_TASK_RE.test(cleaned)) return true;
     if (COMPLETED_TOOL_ROW_RE.test(cleaned)) return false;
     return BUSY_SPINNER_RE.test(cleaned) || BUSY_SPINNER_VERB_RE.test(cleaned);
   });
