@@ -64,8 +64,10 @@ export interface AgentUsageRow extends UsageBucket {
 
 interface ParsedFile {
   session: AgentSession;
-  usage: UsageBucket[];
+  usage: UsageEntry[];
 }
+
+type UsageEntry = UsageBucket & { requestKey?: string };
 
 const HEAD_LINES = 40;
 export const DEFAULT_SESSION_PAGE_SIZE = 30;
@@ -89,20 +91,21 @@ function localDate(ts: string): string | null {
 }
 
 function addUsage(
-  buckets: Map<string, UsageBucket>,
+  buckets: Map<string, UsageEntry>,
   date: string,
   model: string,
   input: number,
   output: number,
   cacheRead: number,
   cacheWrite: number,
-  cacheWrite1h = 0
+  cacheWrite1h = 0,
+  requestKey?: string,
 ): void {
   if (input + output + cacheRead + cacheWrite === 0) return; // e.g. <synthetic> rows
-  const key = `${date}|${model}`;
+  const key = requestKey ?? `${date}|${model}`;
   let b = buckets.get(key);
   if (!b) {
-    b = { date, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 };
+    b = { date, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, requestKey };
     buckets.set(key, b);
   }
   b.input += input;
@@ -328,7 +331,7 @@ async function parseClaudeLines(
   let contextTokens: number | null = null;
   let lineNo = 0;
   let aiTitle: string | null = null;
-  const buckets = new Map<string, UsageBucket>();
+  const buckets = new Map<string, UsageEntry>();
   // A single assistant message is written as several JSONL lines (one per
   // content block), each repeating the same usage — dedupe by message id +
   // request id or every turn gets counted multiple times.
@@ -360,7 +363,7 @@ async function parseClaudeLines(
           const model = /"model":"([^"]+)"/.exec(line)?.[1] ?? "unknown";
           // Claude Code writes its cache with the 1-hour TTL; usage.cache_creation splits it out.
           const cacheW1h = Number(/"ephemeral_1h_input_tokens":(\d+)/.exec(line)?.[1] ?? 0);
-          addUsage(buckets, date, model, input, output, cacheR, cacheW, Math.min(cacheW, cacheW1h));
+          addUsage(buckets, date, model, input, output, cacheR, cacheW, Math.min(cacheW, cacheW1h), dedupeKey ?? undefined);
         }
       }
     }
@@ -415,7 +418,21 @@ async function parseClaudeLines(
   };
 }
 
-async function listClaudeFiles(): Promise<string[]> {
+const CLAUDE_SESSION_ID = /^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/;
+const CLAUDE_SUBAGENT_FILE = /^agent-.+\.jsonl$/;
+
+function isClaudeSessionFile(file: string): boolean {
+  return file.endsWith(".jsonl") && CLAUDE_SESSION_ID.test(path.posix.basename(file, ".jsonl"));
+}
+
+function isClaudeSubagentFile(file: string): boolean {
+  const dir = path.posix.dirname(file);
+  return CLAUDE_SUBAGENT_FILE.test(path.posix.basename(file))
+    && path.posix.basename(dir) === "subagents"
+    && CLAUDE_SESSION_ID.test(path.posix.basename(path.posix.dirname(dir)));
+}
+
+async function listClaudeFiles(includeSubagents = false): Promise<string[]> {
   const root = path.join(os.homedir(), ".claude", "projects");
   const out: string[] = [];
   let projectDirs: fs.Dirent[] = [];
@@ -426,14 +443,15 @@ async function listClaudeFiles(): Promise<string[]> {
   }
   for (const proj of projectDirs) {
     const dir = path.join(root, proj.name);
-    try {
-      for (const f of await fs.promises.readdir(dir)) {
-        // Plain-uuid files are top-level sessions; agent-*.jsonl are subagent
-        // transcripts and not resumable on their own.
-        if (/^[0-9a-f][0-9a-f-]{34}[0-9a-f]\.jsonl$/.test(f)) out.push(path.join(dir, f));
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (isClaudeSessionFile(entry.name)) out.push(path.join(dir, entry.name));
+      if (!includeSubagents || !entry.isDirectory() || !CLAUDE_SESSION_ID.test(entry.name)) continue;
+      const subagents = path.join(dir, entry.name, "subagents");
+      const files = await fs.promises.readdir(subagents).catch(() => []);
+      for (const file of files) {
+        if (CLAUDE_SUBAGENT_FILE.test(file)) out.push(path.join(subagents, file));
       }
-    } catch {
-      /* project dir vanished mid-scan */
     }
   }
   return out;
@@ -588,7 +606,7 @@ function withCodexTitles(sessions: AgentSession[], titles: Map<string, string>):
 const PROVIDERS: Record<
   string,
   {
-    list: () => Promise<string[]>;
+    list: (includeSubagents?: boolean) => Promise<string[]>;
     parse: (abs: string, st: fs.Stats) => Promise<ParsedFile | null>;
     parseSession: (abs: string, st: fs.Stats) => Promise<AgentSession | null>;
   }
@@ -607,10 +625,10 @@ interface AgentFile {
 }
 
 /** Stat and newest-sort transcripts without opening their contents. */
-async function listAgentFileEntries(agent: string, sinceMs = 0): Promise<AgentFile[]> {
+async function listAgentFileEntries(agent: string, sinceMs = 0, includeSubagents = false): Promise<AgentFile[]> {
   const provider = PROVIDERS[agent];
   if (!provider) return [];
-  const files = await provider.list();
+  const files = await provider.list(includeSubagents);
   const entries = await Promise.all(
     files.map(async (abs): Promise<AgentFile | null> => {
       try {
@@ -675,7 +693,7 @@ async function parseSessionFile(
 async function scanAgent(agent: string, sinceMs: number): Promise<ParsedFile[]> {
   const provider = PROVIDERS[agent];
   if (!provider) return [];
-  const files = await listAgentFileEntries(agent, sinceMs);
+  const files = await listAgentFileEntries(agent, sinceMs, true);
   const parsed: ParsedFile[] = [];
   for (const file of files) {
     try {
@@ -801,7 +819,7 @@ const REMOTE_SOURCES: Record<
     dir: "~/.claude/projects",
     name: "*.jsonl",
     depth: 2,
-    accept: (file) => /\/[0-9a-f][0-9a-f-]{34}[0-9a-f]\.jsonl$/.test(file),
+    accept: isClaudeSessionFile,
     // Most entry types carry cwd/gitBranch; a session may have no user line yet.
     keep: ['"type":"user"', '"type":"summary"', '"worktreeSession"', '"cwd":"'],
     titleKeep: AI_TITLE,
@@ -925,9 +943,11 @@ interface RemoteFile {
   mtimeMs: number;
 }
 
-async function listRemoteFiles(exec: RemoteExec, agent: string): Promise<RemoteFile[]> {
+async function listRemoteFiles(exec: RemoteExec, agent: string, includeSubagents = false): Promise<RemoteFile[]> {
   const source = REMOTE_SOURCES[agent];
-  const out = (await exec(REMOTE_FILES_SCRIPT, [source.dir, source.name, String(source.depth)])).toString("utf8");
+  const scanSubagents = includeSubagents && agent === "claude";
+  const depth = scanSubagents ? 4 : source.depth;
+  const out = (await exec(REMOTE_FILES_SCRIPT, [source.dir, source.name, String(depth)])).toString("utf8");
   const [root, ...lines] = out.split("\n");
   if (!root?.startsWith("/")) return [];
   const files: RemoteFile[] = [];
@@ -936,7 +956,10 @@ async function listRemoteFiles(exec: RemoteExec, agent: string): Promise<RemoteF
     if (!match) continue;
     const abs = path.posix.join(root, match[3]);
     const size = Number(match[1]);
-    if (size === 0 || !source.accept(abs)) continue;
+    const accepted = scanSubagents && match[3].split("/").length > source.depth
+      ? isClaudeSubagentFile(abs)
+      : source.accept(abs);
+    if (size === 0 || !accepted) continue;
     files.push({ abs, size, mtimeMs: Number(match[2]) * 1000 });
   }
   return files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.abs.localeCompare(b.abs));
@@ -1156,10 +1179,19 @@ function localDateStart(date: string): number {
 }
 
 function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: ParsedFile[], since: string): void {
+  // Prefer the main transcript's attribution when a subagent copied its messages.
+  if (agent === "claude") {
+    files.sort((a, b) => Number(CLAUDE_SESSION_ID.test(b.session.sessionId)) - Number(CLAUDE_SESSION_ID.test(a.session.sessionId)));
+  }
+  const seen = new Set<string>();
   for (const file of files) {
     const project = file.session.cwd;
     for (const b of file.usage) {
       if (b.date < since) continue;
+      if (b.requestKey) {
+        if (seen.has(b.requestKey)) continue;
+        seen.add(b.requestKey);
+      }
       const key = `${agent}|${project ?? ""}|${b.date}|${b.model}`;
       let row = merged.get(key);
       if (!row) {
@@ -1232,7 +1264,7 @@ export async function listRemoteAgentUsage(
   const sinceMs = localDateStart(since);
   const merged = new Map<string, AgentUsageRow>();
   for (const [agent, source] of Object.entries(REMOTE_SOURCES)) {
-    const files = (await listRemoteFiles(exec, agent)).filter((f) => f.mtimeMs >= sinceMs);
+    const files = (await listRemoteFiles(exec, agent, true)).filter((f) => f.mtimeMs >= sinceMs);
     const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
     const fresh = (f: RemoteFile) => {
       const hit = fullCache.get(cacheKey(f.abs));

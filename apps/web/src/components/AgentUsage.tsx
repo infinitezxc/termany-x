@@ -48,7 +48,10 @@ const PRICING: Array<{ prefix: string; input: number; output: number; cacheRead:
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1 },
   { prefix: "claude-3-5-haiku", input: 0.8, output: 4, cacheRead: 0.08 },
   { prefix: "claude-3-haiku", input: 0.25, output: 1.25, cacheRead: 0.03 },
-  // OpenAI rates: https://platform.openai.com/pricing (verified 2026-10-17).
+  // OpenAI GPT-6.2 rates: https://developers.openai.com/api/docs/pricing
+  { prefix: "gpt-6.2-astra", input: 8, output: 40, cacheRead: 0.4 },
+  { prefix: "gpt-6.2-sol", input: 2, output: 10, cacheRead: 0.1 },
+  // Older OpenAI rates: https://platform.openai.com/pricing (verified 2026-10-17).
   { prefix: "gpt-6.1-sol", input: 2, output: 10, cacheRead: 0.1 },
   { prefix: "gpt-6-astra", input: 10, output: 50, cacheRead: 1 },
   { prefix: "gpt-6-sol", input: 2, output: 10, cacheRead: 0.2 },

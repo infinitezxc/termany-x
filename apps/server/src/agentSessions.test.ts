@@ -71,26 +71,38 @@ test("remote usage matches the local reader on the same transcripts", async () =
     const cwd = path.join(home, "proj \"quoted\"");
     const claudeDir = path.join(home, ".claude", "projects", "-proj");
     await fs.promises.mkdir(claudeDir, { recursive: true });
-    const assistant = (id: string, text: string, input: number) =>
+    const assistant = (id: string, text: string, input: number, model = "claude-opus-4-5", project = cwd) =>
       JSON.stringify({
         type: "assistant",
-        cwd,
+        cwd: project,
         timestamp: ts,
         requestId: `req_${id}`,
         message: {
           id: `msg_${id}`,
-          model: "claude-opus-4-5",
+          model,
           content: [{ type: "text", text }],
           usage: { input_tokens: input, cache_creation_input_tokens: 7, cache_read_input_tokens: 11, output_tokens: 5 },
         },
       });
+    const claudeSessionId = "0123abcd-0000-4000-8000-0123456789ab";
     await fs.promises.writeFile(
-      path.join(claudeDir, "0123abcd-0000-4000-8000-0123456789ab.jsonl"),
+      path.join(claudeDir, `${claudeSessionId}.jsonl`),
       [
         JSON.stringify({ type: "user", cwd, timestamp: ts, message: { content: "x".repeat(200_000) } }),
         assistant("a", "é\\\"".repeat(5_000), 3),
         assistant("a", "duplicate block of the same message", 3),
         assistant("b", "short", 13),
+      ].join("\n"),
+    );
+    const subagents = path.join(claudeDir, claudeSessionId, "subagents");
+    await fs.promises.mkdir(subagents, { recursive: true });
+    const subagentProject = path.join(cwd, "worktree");
+    await fs.promises.writeFile(
+      path.join(subagents, "agent-test.jsonl"),
+      [
+        assistant("a", "copied from the parent transcript", 3, "claude-opus-4-5", subagentProject),
+        assistant("c", "subagent response", 23, "claude-opus-5-5", subagentProject),
+        assistant("c", "duplicate subagent block", 23, "claude-opus-5-5", subagentProject),
       ].join("\n"),
     );
     const codexDir = path.join(home, ".codex", "sessions", "2026", "10", "08");
@@ -122,8 +134,17 @@ test("remote usage matches the local reader on the same transcripts", async () =
         ),
       );
     const local = await listAgentUsage();
-    assert.equal(local.length, 2);
+    assert.equal(local.length, 3);
+    assert.deepEqual(
+      local.filter((row) => row.agent === "claude").map(({ model, project, input, output, cacheRead, cacheWrite }) =>
+        ({ model, project, input, output, cacheRead, cacheWrite })),
+      [
+        { model: "claude-opus-4-5", project: cwd, input: 16, output: 10, cacheRead: 22, cacheWrite: 14 },
+        { model: "claude-opus-5-5", project: subagentProject, input: 23, output: 5, cacheRead: 11, cacheWrite: 7 },
+      ],
+    );
     assert.deepEqual(await listRemoteAgentUsage(exec, "host", undefined), local);
+    assert.deepEqual((await listAgentSessions("claude")).sessions?.map((session) => session.sessionId), [claudeSessionId]);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
