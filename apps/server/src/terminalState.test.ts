@@ -68,6 +68,26 @@ test("snapshot is a barrier between included output and subsequent deltas", asyn
   state.dispose();
 });
 
+test("a redraw burst forwards chunks in order across a resize", async () => {
+  const state = new TerminalState();
+  const events: string[] = [];
+  state.onResponse((reply) => events.push(reply));
+  try {
+    // Each cursor report must precede its own callback and observe the width
+    // in effect when the chunk was queued.
+    const probe = "\x1b[1;999H\x1b[6n";
+    for (const width of [40, 60]) {
+      state.resize(width, 8);
+      for (let i = 0; i < 10; i++) state.write(probe, () => events.push(String(i)));
+    }
+    await snapshot(state);
+    const expected = [40, 60].flatMap(width =>
+      Array.from({ length: 10 }, (_, i) => ["\x1b[1;" + width + "R", String(i)]).flat()
+    );
+    assert.deepEqual(events, expected);
+  } finally { state.dispose(); }
+});
+
 test("reattachment preserves scroll margins, origin mode and hidden cursor", async () => {
   const state = new TerminalState();
   const original = new xterm.Terminal({ allowProposedApi: true });
