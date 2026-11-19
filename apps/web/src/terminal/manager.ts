@@ -73,6 +73,7 @@ export interface Session {
   opened: boolean;
   restoring: boolean;
   followOutput: boolean;
+  bottomFramePending: boolean;
   /** Absolute buffer row held in view after the user scrolls away from live output. */
   lockedViewportY: number | null;
   manualScrollUntil: number;
@@ -146,8 +147,7 @@ function handleWheelScroll(id: string, ev: WheelEvent): boolean {
   // mouse events must keep receiving the wheel.
   if (term.modes.mouseTrackingMode !== "none") return true;
   if (ev.shiftKey || ev.deltaY === 0 || buf.type !== "normal" || buf.baseY === 0) return true;
-  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
-  const rowHeight = screen && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+  const rowHeight = rendererCellSize(term)?.height ?? 0;
   if (!(rowHeight > 0)) return true;
   const lines = session.wheel.lines(ev, {
     rowHeight,
@@ -1075,16 +1075,20 @@ function notifyScrollState(id: string) {
 function settleSessionAtBottom(id: string, focus = false) {
   const session = sessions.get(id);
   if (!session) return;
-  session.term.scrollToBottom();
+  const buffer = session.term.buffer.active;
+  if (buffer.viewportY !== buffer.baseY) session.term.scrollToBottom();
   if (focus) session.term.focus();
   // Some terminal UIs redraw prompts via cursor moves/repaints instead of new
   // lines. Let xterm commit the write/render first, then pin the viewport again
   // so "bottom" means the live input area, not the previous scrollback edge.
+  if (session.bottomFramePending) return;
+  session.bottomFramePending = true;
   requestAnimationFrame(() => {
+    session.bottomFramePending = false;
     const latest = sessions.get(id);
-    if (!latest || !latest.followOutput || Date.now() < latest.manualScrollUntil) return;
-    latest.term.scrollToBottom();
-    latest.term.refresh(0, latest.term.rows - 1);
+    if (latest !== session || !latest.followOutput || Date.now() < latest.manualScrollUntil) return;
+    const buffer = latest.term.buffer.active;
+    if (buffer.viewportY !== buffer.baseY) latest.term.scrollToBottom();
     notifyScrollState(id);
   });
 }
@@ -1512,13 +1516,19 @@ export function prestartSession(
   }
 }
 
+// xterm updates these metrics on resize, zoom and font changes. Reading
+// them during a wheel gesture avoids forcing DOM layout for every tick.
+function rendererCellSize(term: Terminal) {
+  return (term as unknown as {
+    _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
+  })._core?._renderService?.dimensions?.css?.cell;
+}
+
 /** One character cell of an on-screen terminal, in CSS pixels. */
 export function measuredCellSize(): { width: number; height: number } | undefined {
   for (const s of sessions.values()) {
     if (!s.opened || !s.el.isConnected) continue;
-    const cell = (s.term as unknown as {
-      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
-    })._core?._renderService?.dimensions?.css?.cell;
+    const cell = rendererCellSize(s.term);
     if (cell && cell.width > 0 && cell.height > 0) return { width: cell.width, height: cell.height };
   }
   return undefined;
@@ -1706,6 +1716,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     opened: false,
     restoring: false,
     followOutput: true,
+    bottomFramePending: false,
     lockedViewportY: null,
     manualScrollUntil: 0,
     wheel: new WheelLineAccumulator(),

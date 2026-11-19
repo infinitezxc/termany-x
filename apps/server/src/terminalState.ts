@@ -10,6 +10,9 @@ export class TerminalState {
   private readonly serializer = new serialize.SerializeAddon();
   private queue = Promise.resolve();
 
+  private pendingWrites?: { data: string; rendered?: () => void }[];
+  private pendingLength = 0;
+
   constructor(history?: string | TerminalSnapshot) {
     this.term.loadAddon(this.serializer);
     if (history) this.queue = restoreTerminalSnapshot(this.term, history);
@@ -17,12 +20,31 @@ export class TerminalState {
   }
 
   write(data: string, rendered?: () => void): void {
-    this.queue = this.queue.then(() => new Promise<void>((resolve) => {
-      this.term.write(data, () => {
-        rendered?.();
-        resolve();
-      });
-    }));
+    // Feed queued chunks to xterm together so redraw bursts share parser
+    // time slices. Each callback still runs immediately after its own chunk.
+    if (!this.pendingWrites || this.pendingLength + data.length > 64 * 1024) {
+      const writes: { data: string; rendered?: () => void }[] = [];
+      this.enqueue(() => new Promise<void>((resolve) => {
+        if (this.pendingWrites === writes) this.pendingWrites = undefined;
+        for (const [index, write] of writes.entries()) {
+          this.term.write(write.data, () => {
+            write.rendered?.();
+            if (index === writes.length - 1) resolve();
+          });
+        }
+      }));
+      this.pendingWrites = writes;
+      this.pendingLength = 0;
+    }
+    this.pendingWrites.push({ data, rendered });
+    this.pendingLength += data.length;
+  }
+
+  private enqueue(operation: () => void | Promise<void>): Promise<void> {
+    // Resizes and snapshots must observe exactly the writes preceding them.
+    this.pendingWrites = undefined;
+    this.queue = this.queue.then(operation);
+    return this.queue;
   }
 
   onResponse(callback: (data: string) => void): void {
@@ -31,21 +53,20 @@ export class TerminalState {
 
   resize(cols: number, rows: number): void {
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return;
-    this.queue = this.queue.then(() => { this.term.resize(cols, rows); });
+    this.enqueue(() => { this.term.resize(cols, rows); });
   }
 
   /** Runs between output writes: included output is never sent again as a delta. */
   snapshot(ready: (snapshot: TerminalSnapshot) => void): Promise<void> {
-    this.queue = this.queue.then(() => {
+    return this.enqueue(() => {
       ready({ data: this.serializer.serialize() + this.liveState(), cols: this.term.cols, rows: this.term.rows });
     });
-    return this.queue;
   }
 
   /** Replace the scrollback with `history`, keeping the screen, cursor and modes. */
   replaceScrollback(history: string): Promise<boolean> {
     let replaced = false;
-    this.queue = this.queue.then(async () => {
+    this.enqueue(async () => {
       if (this.term.buffer.active.type !== "normal") return;
       const screen = this.serializer.serialize({ scrollback: 0 }) + this.liveState();
       this.term.reset();
@@ -95,11 +116,10 @@ export class TerminalState {
   }
 
   history(ready: (snapshot: TerminalSnapshot) => void): Promise<void> {
-    this.queue = this.queue.then(() => { ready(captureHistory(this.term, this.serializer)); });
-    return this.queue;
+    return this.enqueue(() => { ready(captureHistory(this.term, this.serializer)); });
   }
 
   dispose(): void {
-    void this.queue.then(() => this.term.dispose());
+    void this.enqueue(() => this.term.dispose());
   }
 }
