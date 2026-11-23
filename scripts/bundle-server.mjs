@@ -71,6 +71,11 @@ run(
     `--outfile="${path.join(out, "server.cjs")}"`
 );
 
+run(
+  `npx --no-install esbuild apps/server/src/usageWorker.ts --bundle --platform=node ` +
+    `--format=cjs --target=node16 --define:__TERMANY_VERSION__=true --minify --outfile="${path.join(out, "usage-worker.cjs")}"`
+);
+
 // 3. Ship node-pty next to the bundle. Keep only the host's prebuild (other
 //    arches' native files just add bloat and, on macOS, break codesign), and
 //    drop the .pdb debug symbols the Windows prebuilds carry (~40MB).

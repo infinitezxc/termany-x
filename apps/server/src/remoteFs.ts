@@ -208,6 +208,14 @@ function stderrMessage(stderr: string, code: number | null): string {
   return text?.replace(/^[\w/.-]*sh: (?:line )?(?:\d+: )?/, "") || `remote command failed (exit ${code})`;
 }
 
+export interface RemoteShOptions {
+  input?: string;
+  maxBytes?: number;
+  timeoutMs?: number;
+  /** Consume stdout incrementally instead of retaining a second buffered copy. */
+  onStdout?: (chunk: Buffer) => void;
+}
+
 /**
  * Run a fixed `sh` script on the host with `args` as $1…; resolves stdout.
  * Rejects with the script's last stderr line when it exits non-zero.
@@ -216,20 +224,22 @@ export function remoteSh(
   sshArgs: string[],
   script: string,
   args: string[],
-  options: { input?: string; maxBytes?: number; timeoutMs?: number } = {},
+  options: RemoteShOptions = {},
 ): Promise<Buffer> {
   return run(sshArgs, script, args, { maxBytes: 16 * 1024 * 1024, ...options });
+}
+
+/** `code` lets callers tell a timeout apart from a command that failed. */
+function timeoutError(): Error {
+  return Object.assign(new Error("remote command timed out"), { code: "ETIMEDOUT" });
 }
 
 function run(
   sshArgs: string[],
   script: string,
   args: string[],
-  options: { input?: string; maxBytes: number; timeoutMs?: number },
+  options: RemoteShOptions & { maxBytes: number },
 ): Promise<Buffer> {
-  // The host enforces the same timeout, so a killed client frees its session.
-  const timeoutMs = options.timeoutMs ?? SSH_TIMEOUT_MS;
-  const command = remoteShCommand(script, args, timeoutMs);
   // A caller's own budget counts from the call, including any wait for a
   // slot: the queued request leaves the queue when it runs out. The default
   // gives each command its full time once it runs.
@@ -237,14 +247,23 @@ function run(
   const signal = options.timeoutMs === undefined ? undefined : AbortSignal.timeout(options.timeoutMs);
   // A burst of parallel calls (a git overview across worktrees) queues for
   // the connection's channels rather than having its opens refused.
-  return acquireChannel(sshArgs, { signal }).then((slot) =>
-    runNow(sshArgs, command, deadline === undefined ? options : { ...options, timeoutMs: Math.max(0, deadline - Date.now()) }, slot));
+  const queued = acquireChannel(sshArgs, { signal }).catch((error) => {
+    // The only signal here is the caller's budget, so an abort is a timeout.
+    throw signal?.aborted ? timeoutError() : error;
+  });
+  return queued.then((slot) => {
+    // Both deadlines get what is left once the slot is ours: the host enforces
+    // the same timeout, so a killed client frees its session (and channel).
+    const timeoutMs = deadline === undefined ? SSH_TIMEOUT_MS : Math.max(0, deadline - Date.now());
+    const command = remoteShCommand(script, args, timeoutMs);
+    return runNow(sshArgs, command, { ...options, timeoutMs }, slot);
+  });
 }
 
 function runNow(
   sshArgs: string[],
   command: string,
-  options: { input?: string; maxBytes: number; timeoutMs?: number },
+  options: RemoteShOptions & { maxBytes: number },
   slot: ChannelSlot,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -252,20 +271,27 @@ function runNow(
     const chunks: Buffer[] = [];
     let bytes = 0;
     let stderr = "";
-    let overflow = false;
+    let outputError: Error | undefined;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
     }, options.timeoutMs ?? SSH_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => {
+      if (outputError) return;
       bytes += chunk.length;
       if (bytes > options.maxBytes) {
-        overflow = true;
+        outputError = new Error("remote output too large");
         child.kill();
         return;
       }
-      chunks.push(chunk);
+      try {
+        if (options.onStdout) options.onStdout(chunk);
+        else chunks.push(chunk);
+      } catch (error) {
+        outputError = error instanceof Error ? error : new Error(String(error));
+        child.kill();
+      }
     });
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < 8192) stderr += chunk.toString("utf8");
@@ -279,7 +305,8 @@ function runNow(
       clearTimeout(timer);
       // A killed client's session lingers until the host's own deadline fires.
       slot.release(timedOut ? REMOTE_DEADLINE_GRACE_MS : 0);
-      if (overflow) reject(new Error("remote output too large"));
+      if (outputError) reject(outputError);
+      else if (timedOut) reject(timeoutError());
       else if (code === 0) resolve(Buffer.concat(chunks));
       else reject(new Error(stderrMessage(stderr, code)));
     });

@@ -5093,6 +5093,17 @@ html.tauri #root {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
+.search-empty.usage-error {
+  flex-direction: column;
+  gap: 6px;
+}
+.usage-error-detail {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  opacity: 0.8;
+  word-break: break-word;
+}
+
 .usage-pane {
   display: flex;
   flex-direction: column;

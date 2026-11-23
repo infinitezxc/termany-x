@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import type { RemoteShOptions } from "./remoteFs.js";
 import { UUID_PATTERN } from "./uuid.js";
 
 export interface AgentSession {
@@ -645,6 +646,17 @@ async function listAgentFileEntries(agent: string, sinceMs = 0, includeSubagents
     .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs || a.abs.localeCompare(b.abs));
 }
 
+export async function parseUsageFile(agent: string, abs: string) {
+  const st = await fs.promises.stat(abs);
+  const source = REMOTE_SOURCES[agent];
+  async function* usageLines() {
+    for await (const line of fileLines(abs)) {
+      if (source.usageKeep.some((pattern) => line.includes(pattern))) yield line;
+    }
+  }
+  return source.parseFull(usageLines(), abs, st.mtimeMs);
+}
+
 async function parseFullFile(
   provider: (typeof PROVIDERS)[string],
   { abs, st }: AgentFile
@@ -782,7 +794,7 @@ export async function listAgentSessions(
 // first lines of a batch of them, and the shared head parsers do the rest.
 
 /** Runs a fixed `sh` script on the remote host with $1… = args (see remoteSh). */
-export type RemoteExec = (script: string, args: string[], options?: { maxBytes?: number }) => Promise<Buffer>;
+export type RemoteExec = (script: string, args: string[], options?: RemoteShOptions) => Promise<Buffer>;
 
 /** Head bytes read per file on the remote host (only remote CPU; never sent as-is). */
 const REMOTE_HEAD_INPUT_BYTES = 4 * 1024 * 1024;
@@ -812,7 +824,7 @@ const REMOTE_SOURCES: Record<
     parse: (lines: string[], abs: string, mtimeMs: number) => Promise<AgentSession | null>;
     /** Lines the full (usage) parser reads, wherever they sit in the file. */
     usageKeep: string[];
-    parseFull: (lines: string[], abs: string, mtimeMs: number) => Promise<ParsedFile | null>;
+    parseFull: (lines: AsyncIterable<string> | Iterable<string>, abs: string, mtimeMs: number) => Promise<ParsedFile | null>;
   }
 > = {
   claude: {
@@ -914,8 +926,13 @@ const REMOTE_USAGE_STRING_BYTES = 512;
 const REMOTE_USAGE_FILE_BYTES = 48 * 1024 * 1024;
 /** Raw transcript bytes per round trip — shrunk output is always smaller, so
  *  a multi-file trip stays under REMOTE_USAGE_MAX_BYTES; a larger file goes alone. */
-const REMOTE_USAGE_INPUT_BUDGET = 32 * 1024 * 1024;
+const REMOTE_USAGE_INPUT_BUDGET = 8 * 1024 * 1024;
 const REMOTE_USAGE_MAX_BYTES = 64 * 1024 * 1024;
+/** Per remote usage command — a shell batch, or one run of the Node worker —
+ *  queueing for a channel included. Far above remoteSh's 15 s default: a lone
+ *  large file or a slow link takes longer, and a worker run that times out
+ *  after finishing some files is restarted on the rest (scanWithWorker). */
+const REMOTE_USAGE_TIMEOUT_MS = 90_000;
 
 /** $1 = keep patterns (`|`-separated), $2 = awk program, then files. Whole files, framed like
  *  REMOTE_HEADS_SCRIPT; grep -F (one pattern per line) drops the bulk — tool output, file
@@ -965,21 +982,30 @@ async function listRemoteFiles(exec: RemoteExec, agent: string, includeSubagents
   return files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.abs.localeCompare(b.abs));
 }
 
+/** Bound both estimated bytes and shell argument length. Oversized files travel alone. */
+function* remoteFileBatches(files: RemoteFile[], byteBudget: number, byteCost: (file: RemoteFile) => number) {
+  for (let i = 0; i < files.length; ) {
+    const chunkFiles: RemoteFile[] = [];
+    let remaining = byteBudget;
+    let args = REMOTE_HEADS_ARGS_BUDGET;
+    for (; i < files.length; i++) {
+      const cost = byteCost(files[i]);
+      const argCost = files[i].abs.length + 3;
+      if (chunkFiles.length && (cost > remaining || argCost > args)) break;
+      chunkFiles.push(files[i]);
+      remaining -= cost;
+      args -= argCost;
+    }
+    yield chunkFiles;
+  }
+}
+
 /** Shrunk head lines for each file, keyed by path — split into round trips that stay within budget. */
 async function remoteHeads(exec: RemoteExec, keep: string[], files: RemoteFile[], titleKeep = ""): Promise<Map<string, string[]>> {
   const heads = new Map<string, string[]>();
-  for (let i = 0; i < files.length; ) {
-    const chunkFiles: RemoteFile[] = [];
-    let output = REMOTE_HEADS_OUTPUT_BUDGET;
-    let args = REMOTE_HEADS_ARGS_BUDGET;
-    for (; i < files.length; i++) {
-      const outCost = Math.min(files[i].size, REMOTE_HEAD_OUTPUT_BYTES + REMOTE_STRING_BYTES * 2) + files[i].abs.length + 2;
-      const argCost = files[i].abs.length + 3;
-      if (chunkFiles.length && (outCost > output || argCost > args)) break;
-      chunkFiles.push(files[i]);
-      output -= outCost;
-      args -= argCost;
-    }
+  const headCost = (file: RemoteFile) =>
+    Math.min(file.size, REMOTE_HEAD_OUTPUT_BYTES + REMOTE_STRING_BYTES * 2) + file.abs.length + 2;
+  for (const chunkFiles of remoteFileBatches(files, REMOTE_HEADS_OUTPUT_BUDGET, headCost)) {
     const argv = [String(HEAD_LINES), keep.join("|"), REMOTE_SHRINK_AWK, titleKeep, ...chunkFiles.map((f) => f.abs)];
     const out = (await exec(REMOTE_HEADS_SCRIPT, argv)).toString("utf8");
     for (const chunk of out.split("\x1e").slice(1)) {
@@ -1267,33 +1293,141 @@ export async function listAgentUsage(
   return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/** Shrunk usage lines for each file, keyed by path — split into round trips by raw size. */
-async function remoteUsageLines(exec: RemoteExec, keep: string[], files: RemoteFile[]): Promise<Map<string, string[]>> {
-  const lines = new Map<string, string[]>();
-  for (let i = 0; i < files.length; ) {
-    const chunkFiles: RemoteFile[] = [];
-    let input = REMOTE_USAGE_INPUT_BUDGET;
-    let args = REMOTE_HEADS_ARGS_BUDGET;
-    for (; i < files.length; i++) {
-      const argCost = files[i].abs.length + 3;
-      if (chunkFiles.length && (files[i].size > input || argCost > args)) break;
-      chunkFiles.push(files[i]);
-      input -= files[i].size;
-      args -= argCost;
-    }
-    const argv = [keep.join("|"), REMOTE_SHRINK_AWK, ...chunkFiles.map((f) => f.abs)];
-    const out = (await exec(REMOTE_USAGE_SCRIPT, argv, { maxBytes: REMOTE_USAGE_MAX_BYTES })).toString("utf8");
+declare const __TERMANY_VERSION__: string;
+let workerSource: Promise<string> | undefined;
+
+async function loadUsageWorker(): Promise<string> {
+  if (typeof __TERMANY_VERSION__ !== "undefined") {
+    return fs.promises.readFile(path.join(__dirname, "usage-worker.cjs"), "utf8");
+  }
+  // Development runs TypeScript directly. A non-literal specifier keeps the
+  // dev-only builder (and esbuild) out of every bundle.
+  const builder = "./usageWorkerSource.js";
+  const { buildUsageWorker } = await import(builder);
+  return buildUsageWorker();
+}
+
+/** $1 = worker source, $2 = time zone; the worker reads its manifest on stdin.
+ *  Non-interactive SSH shells rarely have a version manager's PATH, so the
+ *  usual install locations are tried too. Prints `no-node` when none is >= 16. */
+const REMOTE_PARSE_SCRIPT =
+  'worker=$1; zone=$2; ' +
+  'for n in node /usr/local/bin/node /opt/homebrew/bin/node "$HOME"/.volta/bin/node ' +
+  '"$HOME"/.asdf/shims/node "$HOME"/.nodenv/shims/node "$HOME"/.nvm/versions/node/*/bin/node ' +
+  '"$HOME"/.local/share/fnm/node-versions/*/installation/bin/node ' +
+  '"$HOME/Library/Application Support/fnm"/node-versions/*/installation/bin/node; do ' +
+  'v=$("$n" --version 2>/dev/null) || continue; v=${v#v}; v=${v%%.*}; ' +
+  '[ "$v" -ge 16 ] 2>/dev/null || continue; TZ="$zone" exec "$n" -e "$worker"; done; ' +
+  'printf "no-node\\n"';
+
+/** Takes a finished file off the scan, caching its usage; null when it vanished or was unreadable. */
+type AcceptUsage = (abs: string, result: ParsedFile | null) => void;
+
+async function readShellUsage(exec: RemoteExec, agent: string, files: RemoteFile[], accept: AcceptUsage): Promise<void> {
+  const source = REMOTE_SOURCES[agent];
+  for (const chunkFiles of remoteFileBatches(files, REMOTE_USAGE_INPUT_BUDGET, (file) => file.size)) {
+    const paths = chunkFiles.map((f) => f.abs);
+    const options = { maxBytes: REMOTE_USAGE_MAX_BYTES, timeoutMs: REMOTE_USAGE_TIMEOUT_MS };
+    const argv = [source.usageKeep.join("|"), REMOTE_SHRINK_AWK, ...paths];
+    const out = (await exec(REMOTE_USAGE_SCRIPT, argv, options)).toString();
+    const metadata = new Map(chunkFiles.map((file) => [file.abs, file]));
     for (const chunk of out.split("\x1e").slice(1)) {
-      const [file, ...rest] = chunk.split("\n");
-      lines.set(file, rest);
+      const [abs, ...lines] = chunk.split("\n");
+      const file = metadata.get(abs);
+      if (file) accept(abs, await source.parseFull(lines, abs, file.mtimeMs));
     }
   }
-  return lines;
+}
+
+/** Calls `onLine` for each complete line of a byte stream. Rejects any line,
+ *  finished or not, longer than `maxLine` bytes before buffering it whole.
+ *  `partial` is true while an unfinished line is held. Exported for tests. */
+export function lineSplitter(maxLine: number, onLine: (line: string) => void) {
+  let pieces: Buffer[] = [];
+  let held = 0;
+  const hold = (piece: Buffer) => {
+    held += piece.length;
+    if (held > maxLine) throw new Error("remote usage record too large");
+    pieces.push(piece);
+  };
+  return {
+    write(chunk: Buffer) {
+      let start = 0;
+      for (let newline = chunk.indexOf(10); newline !== -1; newline = chunk.indexOf(10, start)) {
+        hold(chunk.subarray(start, newline));
+        const line = Buffer.concat(pieces, held).toString("utf8");
+        pieces = [];
+        held = 0;
+        start = newline + 1;
+        onLine(line);
+      }
+      if (start < chunk.length) hold(chunk.subarray(start));
+    },
+    get partial() {
+      return held > 0;
+    },
+  };
+}
+
+/** Files a scan still has to read, keyed by path. `accept` takes each off as
+ *  it finishes, so the map alone tracks progress, duplicates and completion. */
+type MissingUsage = Map<string, { agent: string }>;
+
+/**
+ * One Node process on the host parses every `missing` file (sent on stdin as
+ * [agent, path] pairs) and prints one JSON record per file as it finishes, so
+ * each reaches `accept` (and the cache) at once; a record for a file not
+ * missing makes `accept` throw. Resolves false when the host has no usable
+ * Node; rejects when the scan stops before every file is reported.
+ */
+async function readWorkerUsage(exec: RemoteExec, missing: MissingUsage, accept: AcceptUsage): Promise<boolean> {
+  workerSource ??= loadUsageWorker();
+  let noNode = false;
+  const lines = lineSplitter(REMOTE_USAGE_MAX_BYTES, (line) => {
+    if (line === "no-node") {
+      noNode = true;
+      return;
+    }
+    const [abs, result] = JSON.parse(line);
+    accept(abs, result);
+  });
+  await exec(REMOTE_PARSE_SCRIPT, [await workerSource, Intl.DateTimeFormat().resolvedOptions().timeZone], {
+    input: JSON.stringify([...missing].map(([abs, { agent }]) => [agent, abs])),
+    timeoutMs: REMOTE_USAGE_TIMEOUT_MS,
+    maxBytes: Infinity, // lineSplitter bounds each record and releases it at once.
+    onStdout: lines.write,
+  });
+  if (noNode) return false;
+  if (lines.partial || missing.size) throw new Error("incomplete remote usage response");
+  return true;
 }
 
 /**
- * listAgentUsage for an SSH pane's host. Only the usage-bearing lines of the
- * transcripts updated in range cross the wire, shrunk; parses are cached per
+ * Scans the `missing` files with the host's Node. A scan that times out after
+ * finishing some files restarts on the rest, so a large first scan completes
+ * without the user retrying; one that times out with no progress rejects.
+ * Resolves false when the shell reader should take what is left: the host has
+ * no Node, or the worker failed some other way.
+ */
+async function scanWithWorker(exec: RemoteExec, missing: MissingUsage, accept: AcceptUsage): Promise<boolean> {
+  while (missing.size) {
+    const before = missing.size;
+    try {
+      return await readWorkerUsage(exec, missing, accept);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ETIMEDOUT") {
+        console.warn(`[usage] remote worker failed, using the shell reader: ${(error as Error).message}`);
+        return false;
+      }
+      if (missing.size === before) throw error;
+    }
+  }
+  return true;
+}
+
+/**
+ * Usage for an SSH pane. Remote Node hosts send per-file usage, including
+ * request IDs for cross-file deduplication. Results are cached per
  * `hostKey` + path + mtime/size, so a refresh only re-reads what changed.
  */
 export async function listRemoteAgentUsage(
@@ -1307,26 +1441,36 @@ export async function listRemoteAgentUsage(
   const { since, until } = range;
   const sinceMs = localDateStart(since);
   const merged = new Map<string, AgentUsageRow>();
-  for (const [agent, source] of Object.entries(REMOTE_SOURCES)) {
+  const groups = new Map<string, RemoteFile[]>();
+  // Files this request still has to read; results are this request's own, as
+  // an overlapping request may replace a cache entry while this one reads.
+  const missing = new Map<string, { agent: string; file: RemoteFile }>();
+  const results = new Map<string, ParsedFile>();
+  const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
+  for (const agent of Object.keys(REMOTE_SOURCES)) {
     const files = (await listRemoteFiles(exec, agent, true)).filter((f) => f.mtimeMs >= sinceMs);
-    const cacheKey = (abs: string) => `${hostKey}\0${abs}`;
-    const fresh = (f: RemoteFile) => {
-      const hit = fullCache.get(cacheKey(f.abs));
-      return hit && hit.mtimeMs === f.mtimeMs && hit.size === f.size ? hit.parsed : null;
-    };
-    const missing = files.filter((f) => !fresh(f));
-    const fetched = missing.length ? await remoteUsageLines(exec, source.usageKeep, missing) : new Map<string, string[]>();
-    const parsed: ParsedFile[] = [];
+    groups.set(agent, files);
     for (const file of files) {
-      let result = fresh(file);
-      const lines = fetched.get(file.abs);
-      if (!result && lines) {
-        result = await source.parseFull(lines, file.abs, file.mtimeMs);
-        if (result) fullCache.set(cacheKey(file.abs), { mtimeMs: file.mtimeMs, size: file.size, parsed: result });
-      }
-      if (result) parsed.push(result);
+      const hit = fullCache.get(cacheKey(file.abs));
+      if (hit && hit.mtimeMs === file.mtimeMs && hit.size === file.size) results.set(file.abs, hit.parsed);
+      else missing.set(file.abs, { agent, file });
     }
-    mergeUsage(merged, agent, parsed, since, until);
+  }
+  const accept: AcceptUsage = (abs, parsed) => {
+    const entry = missing.get(abs);
+    if (!entry) throw new Error("unexpected remote usage record"); // unrequested, or a duplicate
+    missing.delete(abs);
+    if (!parsed) return; // Not cached: a vanished or unreadable file is retried next time.
+    results.set(abs, parsed);
+    fullCache.set(cacheKey(abs), { mtimeMs: entry.file.mtimeMs, size: entry.file.size, parsed });
+  };
+  if (!(await scanWithWorker(exec, missing, accept))) {
+    for (const [agent, files] of groups) {
+      await readShellUsage(exec, agent, files.filter((f) => missing.has(f.abs)), accept);
+    }
+  }
+  for (const [agent, files] of groups) {
+    mergeUsage(merged, agent, files.flatMap((f) => results.get(f.abs) ?? []), since, until);
   }
   return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
 }

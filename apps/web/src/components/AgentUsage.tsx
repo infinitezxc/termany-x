@@ -151,6 +151,7 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
   const agentConfigs = useAgentConfigs();
   const [rows, setRows] = useState<UsageRow[] | null | undefined>(undefined);
   const [stale, setStale] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [range, setRange] = useState<RangeChoice<RangeKey>>({ preset: "today" });
   const { since, until } = rangeBounds(range);
   const [agent, setAgent] = useState("all");
@@ -160,20 +161,29 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
     let cancelled = false;
     const abort = new AbortController();
     setRows(undefined);
+    setErrorDetail(null);
     // Older servers ignore `until`; the client-side filter below enforces it anyway.
     const params = new URLSearchParams({ since, until });
     if (ssh) params.set("session", ssh.session);
     fetch(apiPath(`/api/agent-usage?${params}`), { signal: abort.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        // The server answers failures with { error }; keep it so the cause is visible.
+        const body = await r.json().catch(() => null);
+        const err = new Error(String(r.status)) as Error & { detail?: string };
+        if (typeof body?.error === "string") err.detail = body.error;
+        throw err;
+      })
       .then((data) => {
         if (!cancelled) setRows(Array.isArray(data.rows) ? data.rows : []);
       })
-      .catch((e: Error) => {
+      .catch((e: Error & { detail?: string }) => {
         if (cancelled || e.name === "AbortError") return;
         // A 404 on a route this build ships means the backend answering us is
         // older than the UI — an upgrade left the previous release's server
         // holding the port. Say so instead of blaming the data.
         setStale(e.message === "404");
+        setErrorDetail(e.detail ?? (e.message === "404" ? null : e.message));
         setRows(null);
       });
     return () => {
@@ -375,7 +385,10 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
 
         {rows === undefined && <div className="search-empty">{t("usage.loading")}</div>}
         {rows === null && (
-          <div className="search-empty">{t(stale ? "server.stale" : "usage.error")}</div>
+          <div className="search-empty usage-error">
+            {t(stale ? "server.stale" : "usage.error")}
+            {!stale && errorDetail && <div className="usage-error-detail">{errorDetail}</div>}
+          </div>
         )}
         {Array.isArray(rows) && filtered.length === 0 && (
           <div className="search-empty">{t("usage.empty")}</div>
