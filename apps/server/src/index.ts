@@ -1841,14 +1841,16 @@ const http = createServer((req, res) => {
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-usage") {
     (async () => {
       const since = reqUrl.searchParams.get("since");
+      const until = reqUrl.searchParams.get("until");
       const remote = remoteFsFor(reqUrl.searchParams.get("session"));
       const rows = remote
         ? await listRemoteAgentUsage(
             (script, args, options) => remoteSh(remote.args, script, args, options),
             remote.target,
             since,
+            until,
           )
-        : await listAgentUsage(since);
+        : await listAgentUsage(since, until);
       json(200, { rows });
     })().catch(fail);
     return;

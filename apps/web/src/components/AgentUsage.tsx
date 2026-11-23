@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { UsageSelect } from "./Select";
+import { UsageRangePicker, type RangeChoice } from "./UsageRangePicker";
 import { useI18n } from "../i18n";
 import { ChartIcon } from "./icons";
 import { tildify } from "../tildify";
@@ -106,6 +107,15 @@ const RANGES = [
 
 type RangeKey = (typeof RANGES)[number]["key"];
 
+/** Matches the server's USAGE_MAX_DAYS: the oldest day it will report. */
+const MAX_LOOKBACK_DAYS = 366;
+
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return localDateString(d);
+}
+
 function rangeCutoff(range: RangeKey): string {
   const d = new Date();
   if (range === "week") d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday
@@ -113,7 +123,19 @@ function rangeCutoff(range: RangeKey): string {
   return localDateString(d);
 }
 
-const MAX_CHART_DAYS = 31;
+/** Inclusive [since, until]; presets are recomputed so "today" stays current. */
+function rangeBounds(choice: RangeChoice<RangeKey>): { since: string; until: string } {
+  if (choice.preset !== null) return { since: rangeCutoff(choice.preset), until: localDateString(new Date()) };
+  const oldest = daysAgo(MAX_LOOKBACK_DAYS - 1);
+  return { since: choice.since < oldest ? oldest : choice.since, until: choice.until };
+}
+
+function dayStart(date: string): Date {
+  return new Date(`${date}T00:00:00`);
+}
+
+/** Bars beyond this are grouped into multi-day buckets so they stay legible. */
+const MAX_CHART_BARS = 31;
 
 /**
  * Agent token-usage dashboard (the SideRail chart button): totals + estimated
@@ -125,11 +147,12 @@ const MAX_CHART_DAYS = 31;
  */
 /** `ssh` is the host to report on (see usePaneHost); undefined for this machine. */
 export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const agentConfigs = useAgentConfigs();
   const [rows, setRows] = useState<UsageRow[] | null | undefined>(undefined);
   const [stale, setStale] = useState(false);
-  const [range, setRange] = useState<RangeKey>("today");
+  const [range, setRange] = useState<RangeChoice<RangeKey>>({ preset: "today" });
+  const { since, until } = rangeBounds(range);
   const [agent, setAgent] = useState("all");
   const [project, setProject] = useState("all");
 
@@ -137,7 +160,8 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
     let cancelled = false;
     const abort = new AbortController();
     setRows(undefined);
-    const params = new URLSearchParams({ since: rangeCutoff(range) });
+    // Older servers ignore `until`; the client-side filter below enforces it anyway.
+    const params = new URLSearchParams({ since, until });
     if (ssh) params.set("session", ssh.session);
     fetch(apiPath(`/api/agent-usage?${params}`), { signal: abort.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -156,7 +180,7 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
       cancelled = true;
       abort.abort();
     };
-  }, [range, ssh]);
+  }, [since, until, ssh]);
 
   const agentIds = useMemo(
     () => [...new Set((rows ?? []).map((r) => r.agent))].sort(),
@@ -184,14 +208,14 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
 
   const filtered = useMemo(() => {
     if (!rows) return [];
-    const cutoff = rangeCutoff(range);
     return rows.filter(
       (r) =>
         (agent === "all" || r.agent === agent) &&
         (project === "all" || projectName(r) === project) &&
-        r.date >= cutoff
+        r.date >= since &&
+        r.date <= until
     );
-  }, [rows, range, agent, project]);
+  }, [rows, since, until, agent, project]);
 
   const totals = useMemo(() => {
     let input = 0;
@@ -213,8 +237,9 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
   }, [filtered]);
 
   // Continuous day series (missing days rendered as empty slots) so the chart
-  // reads as a calendar, not just a list of active days.
-  const days = useMemo(() => {
+  // reads as a calendar, not just a list of active days. It spans exactly the
+  // selected range; long custom ranges group consecutive days into one bar.
+  const { days, bucketDays } = useMemo(() => {
     const byDate = new Map<string, { input: number; output: number }>();
     for (const r of filtered) {
       const d = byDate.get(r.date) ?? { input: 0, output: 0 };
@@ -222,21 +247,28 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
       d.output += r.output;
       byDate.set(r.date, d);
     }
-    // The chart always ends today and starts at the selected range cutoff.
-    const cutoff = rangeCutoff(range);
-    if (!cutoff) return [];
-    const span = Math.floor((Date.now() - new Date(`${cutoff}T00:00:00`).getTime()) / 86400000) + 1;
-    const count = Math.min(Math.max(span, 1), MAX_CHART_DAYS);
-    const out: Array<{ date: string; input: number; output: number }> = [];
-    for (let i = count - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const date = localDateString(d);
-      const v = byDate.get(date);
-      out.push({ date, input: v?.input ?? 0, output: v?.output ?? 0 });
+    // Step by calendar date (not 24h) so DST shifts can't skip or repeat a day.
+    const all: string[] = [];
+    for (const d = dayStart(since); localDateString(d) <= until; d.setDate(d.getDate() + 1)) {
+      all.push(localDateString(d));
     }
-    return out;
-  }, [filtered, range]);
+    const size = Math.max(1, Math.ceil(all.length / MAX_CHART_BARS));
+    const out: Array<{ date: string; end: string; input: number; output: number }> = [];
+    for (let i = 0; i < all.length; i += size) {
+      const slice = all.slice(i, i + size);
+      let input = 0;
+      let output = 0;
+      for (const date of slice) {
+        const v = byDate.get(date);
+        input += v?.input ?? 0;
+        output += v?.output ?? 0;
+      }
+      out.push({ date: slice[0], end: slice[slice.length - 1], input, output });
+    }
+    return { days: out, bucketDays: size };
+  }, [filtered, since, until]);
+  // Year-crossing ranges need the year on the axis; same-year ranges read cleaner without it.
+  const axisLabel = (date: string) => (since.slice(0, 4) === until.slice(0, 4) ? date.slice(5) : date);
 
   const chartMax = Math.max(1, ...days.map((d) => d.input + d.output));
 
@@ -322,11 +354,21 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
                 ...projectOptions.map((name) => ({ value: name, label: name })),
               ]}
             />
-            <UsageSelect
-              width={132}
-              value={range}
-              onChange={(v) => setRange(v as RangeKey)}
-              options={RANGES.map((r) => ({ value: r.key, label: t(r.labelKey) }))}
+            <UsageRangePicker
+              preset={range.preset}
+              since={since}
+              until={until}
+              presets={RANGES.map((r) => ({ key: r.key, label: t(r.labelKey) }))}
+              min={daysAgo(MAX_LOOKBACK_DAYS - 1)}
+              max={localDateString(new Date())}
+              locale={language}
+              hints={{
+                start: t("usage.pickStart"),
+                end: t("usage.pickEnd"),
+                prevMonth: t("usage.prevMonth"),
+                nextMonth: t("usage.nextMonth"),
+              }}
+              onChange={setRange}
             />
           </div>
         </div>
@@ -353,7 +395,9 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
 
             <div className="usage-section">
               <div className="usage-section-head">
-                <span>{t("usage.daily")}</span>
+                <span>
+                  {bucketDays > 1 ? t("usage.bucketed", { n: String(bucketDays) }) : t("usage.daily")}
+                </span>
                 <span className="usage-legend">
                   <i className="usage-swatch output" /> {t("usage.legend.output")}
                   <i className="usage-swatch input" /> {t("usage.legend.input")}
@@ -365,7 +409,7 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
                   <div
                     key={d.date}
                     className="usage-bar-slot"
-                    title={`${d.date}\n${t("usage.chartTip", {
+                    title={`${d.date === d.end ? d.date : `${d.date} – ${d.end}`}\n${t("usage.chartTip", {
                       input: formatTokens(d.input),
                       output: formatTokens(d.output),
                     })}`}
@@ -385,8 +429,8 @@ export function AgentUsage({ ssh }: { ssh?: { label: string; session: string } }
               </div>
               {days.length > 0 && (
                 <div className="usage-chart-axis">
-                  <span>{days[0].date.slice(5)}</span>
-                  <span>{days[days.length - 1].date.slice(5)}</span>
+                  <span>{axisLabel(days[0].date)}</span>
+                  <span>{axisLabel(days[days.length - 1].end)}</span>
                 </div>
               )}
             </div>

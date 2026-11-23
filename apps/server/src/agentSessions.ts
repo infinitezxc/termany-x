@@ -1151,26 +1151,56 @@ export async function deleteRemoteAgentSession(exec: RemoteExec, hostKey: string
   }
 }
 
+/** How far back (in calendar days, today included) usage can be requested. */
+export const USAGE_MAX_DAYS = 366;
+
+/** A real local calendar date in YYYY-MM-DD form (rejects 2026-02-30 etc.). */
+function isUsageDate(value?: string | null): value is string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
+}
+
+function usageWindow(now: Date): { oldest: string; today: string } {
+  const today = localDate(now.toISOString())!;
+  const oldest = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (USAGE_MAX_DAYS - 1)).toISOString())!;
+  return { oldest, today };
+}
+
 /**
- * Validate a requested local date and cap it to a rolling 31-day window.
+ * Validate a requested local date and cap it to a rolling USAGE_MAX_DAYS window.
  * Missing/invalid/future values intentionally fall back to today.
  */
 export function normalizeUsageSince(requested?: string | null, now = new Date()): string {
-  const today = localDate(now.toISOString())!;
-  const oldest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
-  const oldestDate = localDate(oldest.toISOString())!;
-  if (!requested || !/^\d{4}-\d{2}-\d{2}$/.test(requested)) return today;
-  const [year, month, day] = requested.split("-").map(Number);
-  const parsed = new Date(year, month - 1, day);
-  if (
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day ||
-    requested > today
-  ) {
-    return today;
-  }
-  return requested < oldestDate ? oldestDate : requested;
+  const { oldest, today } = usageWindow(now);
+  if (!isUsageDate(requested) || requested > today) return today;
+  return requested < oldest ? oldest : requested;
+}
+
+/**
+ * The inclusive [since, until] to report.
+ *
+ * Since-only requests (older clients, and the presets) keep the original
+ * contract exactly: `since` goes through normalizeUsageSince (missing,
+ * invalid or future → today; older → clamped) and the range runs to today.
+ *
+ * With an explicit valid `until`, the requested range is intersected with the
+ * supported window (oldest..today), and null is returned when that is empty —
+ * a range wholly before the window or in the future, or an inverted one —
+ * so it reports nothing instead of the window's newer usage.
+ */
+export function normalizeUsageRange(
+  requestedSince?: string | null,
+  requestedUntil?: string | null,
+  now = new Date(),
+): { since: string; until: string } | null {
+  const { oldest, today } = usageWindow(now);
+  if (!isUsageDate(requestedUntil)) return { since: normalizeUsageSince(requestedSince, now), until: today };
+  const from = isUsageDate(requestedSince) ? requestedSince : today;
+  const since = from < oldest ? oldest : from;
+  const until = requestedUntil > today ? today : requestedUntil;
+  return since <= until ? { since, until } : null;
 }
 
 function localDateStart(date: string): number {
@@ -1178,7 +1208,13 @@ function localDateStart(date: string): number {
   return new Date(year, month - 1, day).getTime();
 }
 
-function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: ParsedFile[], since: string): void {
+function mergeUsage(
+  merged: Map<string, AgentUsageRow>,
+  agent: string,
+  files: ParsedFile[],
+  since: string,
+  until: string,
+): void {
   // Prefer the main transcript's attribution when a subagent copied its messages.
   if (agent === "claude") {
     files.sort((a, b) => Number(CLAUDE_SESSION_ID.test(b.session.sessionId)) - Number(CLAUDE_SESSION_ID.test(a.session.sessionId)));
@@ -1187,7 +1223,7 @@ function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: Pa
   for (const file of files) {
     const project = file.session.cwd;
     for (const b of file.usage) {
-      if (b.date < since) continue;
+      if (b.date < since || b.date > until) continue;
       if (b.requestKey) {
         if (seen.has(b.requestKey)) continue;
         seen.add(b.requestKey);
@@ -1218,11 +1254,16 @@ function mergeUsage(merged: Map<string, AgentUsageRow>, agent: string, files: Pa
 }
 
 /** Daily usage merged by agent/project/date/model inside the bounded range. */
-export async function listAgentUsage(requestedSince?: string | null): Promise<AgentUsageRow[]> {
-  const since = normalizeUsageSince(requestedSince);
+export async function listAgentUsage(
+  requestedSince?: string | null,
+  requestedUntil?: string | null,
+): Promise<AgentUsageRow[]> {
+  const range = normalizeUsageRange(requestedSince, requestedUntil);
+  if (!range) return [];
+  const { since, until } = range;
   const sinceMs = localDateStart(since);
   const merged = new Map<string, AgentUsageRow>();
-  for (const agent of supportedAgents()) mergeUsage(merged, agent, await scanAgent(agent, sinceMs), since);
+  for (const agent of supportedAgents()) mergeUsage(merged, agent, await scanAgent(agent, sinceMs), since, until);
   return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -1259,8 +1300,11 @@ export async function listRemoteAgentUsage(
   exec: RemoteExec,
   hostKey: string,
   requestedSince?: string | null,
+  requestedUntil?: string | null,
 ): Promise<AgentUsageRow[]> {
-  const since = normalizeUsageSince(requestedSince);
+  const range = normalizeUsageRange(requestedSince, requestedUntil);
+  if (!range) return [];
+  const { since, until } = range;
   const sinceMs = localDateStart(since);
   const merged = new Map<string, AgentUsageRow>();
   for (const [agent, source] of Object.entries(REMOTE_SOURCES)) {
@@ -1282,7 +1326,7 @@ export async function listRemoteAgentUsage(
       }
       if (result) parsed.push(result);
     }
-    mergeUsage(merged, agent, parsed, since);
+    mergeUsage(merged, agent, parsed, since, until);
   }
   return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
 }

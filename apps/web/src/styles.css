@@ -5408,6 +5408,130 @@ html.tauri #root {
 .usage-select-item.active {
   background: var(--accent-soft);
 }
+/* Range picker (see UsageRangePicker): presets beside a month calendar. It
+   sits last in the filter row, so the popover opens leftward from its right edge. */
+.usage-range {
+  min-width: 132px;
+}
+.usage-range-menu {
+  right: 0;
+  left: auto;
+  width: max-content;
+  max-height: none;
+  overflow: auto;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+}
+.usage-range-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 104px;
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+}
+.usage-cal {
+  width: 224px;
+}
+.usage-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 6px;
+  font-size: 12.5px;
+}
+.usage-cal-title {
+  font-weight: 600;
+}
+.usage-cal-nav {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.usage-cal-nav:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.usage-cal-nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.usage-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 2px;
+}
+.usage-cal-weekday {
+  padding: 2px 0 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-align: center;
+}
+.usage-cal-day {
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.usage-cal-day:not(:disabled):not(.in-range):hover {
+  background: var(--bg-3);
+}
+.usage-cal-day.today {
+  font-weight: 700;
+}
+.usage-cal-day.in-range {
+  background: var(--accent-soft);
+}
+.usage-cal-day.edge {
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+.usage-cal-day:disabled {
+  color: var(--fg-dim);
+  opacity: 0.35;
+  cursor: default;
+}
+.usage-cal-hint {
+  padding: 6px 2px 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+/* Stacked when the pane (not the viewport) is narrow — see UsageRangePicker. */
+.usage-range-menu.stacked {
+  flex-direction: column;
+}
+.usage-range-menu.stacked .usage-range-presets {
+  flex-direction: row;
+  flex-wrap: wrap;
+  padding: 0 0 6px;
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+.usage-range-menu.stacked .usage-select-item {
+  width: auto;
+}
+.usage-range-menu.stacked .usage-cal {
+  max-width: 100%;
+}
+.usage-cal-day {
+  min-width: 0;
+}
 
 /* Activity monitor pane: toolbar + scrolling process table over a fixed
    footer. Sized in container units so the same component works in a half-width

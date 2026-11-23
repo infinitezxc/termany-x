@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { deleteAgentSession, listAgentSessions, listAgentUsage, listRemoteAgentUsage, normalizeUsageSince } from "./agentSessions.js";
+import { deleteAgentSession, listAgentSessions, listAgentUsage, listRemoteAgentUsage, normalizeUsageRange, normalizeUsageSince } from "./agentSessions.js";
 
 const now = new Date(2026, 7, 3, 12, 0, 0);
 
@@ -12,13 +12,38 @@ test("usage defaults to the server's local today", () => {
   assert.equal(normalizeUsageSince(undefined, now), "2026-08-03");
 });
 
-test("usage accepts dates inside the rolling 31-day window", () => {
+test("usage accepts dates inside the rolling 366-day window", () => {
   assert.equal(normalizeUsageSince("2026-08-01", now), "2026-08-01");
   assert.equal(normalizeUsageSince("2026-07-04", now), "2026-07-04");
+  assert.equal(normalizeUsageSince("2025-08-03", now), "2025-08-03");
 });
 
-test("usage clamps older dates to at most 31 calendar days", () => {
-  assert.equal(normalizeUsageSince("2020-01-01", now), "2026-07-04");
+test("usage clamps older dates to at most 366 calendar days", () => {
+  assert.equal(normalizeUsageSince("2020-01-01", now), "2025-08-03");
+});
+
+test("usage range is the request intersected with the supported window", () => {
+  assert.deepEqual(normalizeUsageRange(undefined, undefined, now), { since: "2026-08-03", until: "2026-08-03" });
+  assert.deepEqual(normalizeUsageRange("2026-07-01", undefined, now), { since: "2026-07-01", until: "2026-08-03" });
+  assert.deepEqual(normalizeUsageRange("2026-07-01", "2026-07-15", now), { since: "2026-07-01", until: "2026-07-15" });
+  assert.deepEqual(normalizeUsageRange("2026-07-01", "2026-07-01", now), { since: "2026-07-01", until: "2026-07-01" });
+  assert.deepEqual(normalizeUsageRange("2020-01-01", "2025-09-01", now), { since: "2025-08-03", until: "2025-09-01" });
+  assert.deepEqual(normalizeUsageRange("2026-08-01", "2027-01-01", now), { since: "2026-08-01", until: "2026-08-03" });
+  assert.deepEqual(normalizeUsageRange("2026-07-01", "2026-02-30", now), { since: "2026-07-01", until: "2026-08-03" });
+});
+
+test("since-only usage requests keep the original fallbacks", () => {
+  // Same results as normalizeUsageSince, through the path the API actually uses.
+  for (const since of [undefined, "not-a-date", "2026-02-30", "2026-08-04", "2026-08-01", "2020-01-01"]) {
+    assert.deepEqual(normalizeUsageRange(since, undefined, now), { since: normalizeUsageSince(since, now), until: "2026-08-03" });
+  }
+  assert.deepEqual(normalizeUsageRange("2026-08-04", undefined, now), { since: "2026-08-03", until: "2026-08-03" });
+});
+
+test("usage range is empty when nothing of it lies inside the window", () => {
+  assert.equal(normalizeUsageRange("2024-01-01", "2024-01-31", now), null); // wholly before the window
+  assert.equal(normalizeUsageRange("2026-07-15", "2026-07-01", now), null); // inverted
+  assert.equal(normalizeUsageRange("2026-08-04", "2026-08-10", now), null); // wholly in the future
 });
 
 test("usage rejects invalid and future dates", () => {
@@ -144,6 +169,22 @@ test("remote usage matches the local reader on the same transcripts", async () =
       ],
     );
     assert.deepEqual(await listRemoteAgentUsage(exec, "host", undefined), local);
+    // A range wholly before the window must report nothing, not the newer usage.
+    assert.deepEqual(await listAgentUsage("2024-01-01", "2024-01-31"), []);
+    assert.deepEqual(await listRemoteAgentUsage(exec, "host", "2024-01-01", "2024-01-31"), []);
+    // A range ending before today's usage excludes it, locally and over SSH.
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const y = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+    assert.deepEqual(await listAgentUsage("2024-01-01", y), []);
+    assert.deepEqual(await listRemoteAgentUsage(exec, "host", "2024-01-01", y), []);
+    assert.deepEqual(await listRemoteAgentUsage(exec, "host", "2024-01-01", undefined), local);
+    // A future since-only request falls back to today, as it always has.
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tm = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+    assert.deepEqual(await listAgentUsage(tm), local);
+    assert.deepEqual(await listRemoteAgentUsage(exec, "host", tm), local);
     assert.deepEqual((await listAgentSessions("claude")).sessions?.map((session) => session.sessionId), [claudeSessionId]);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
