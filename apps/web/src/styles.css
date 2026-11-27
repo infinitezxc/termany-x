@@ -3049,6 +3049,10 @@ html.tauri #root {
 .file-tree-row.git-ignored .file-tree-name { opacity: 0.6; }
 .file-tree-row.git-ignored:hover .file-tree-icon,
 .file-tree-row.git-ignored:hover .file-tree-name { opacity: 0.85; }
+/* Hidden dotfiles/dotfolders sit halfway between ignored and normal rows. */
+.file-tree-row.dotfile:not(.git-ignored) { color: color-mix(in srgb, var(--fg) 30%, var(--fg-dim)); }
+.file-tree-row.dotfile:not(.git-ignored):hover,
+.file-tree-row.dotfile:not(.git-ignored).selected { color: var(--fg); }
 .file-tree-row:hover {
   background: var(--bg-3);
   color: var(--fg);

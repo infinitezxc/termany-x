@@ -604,7 +604,7 @@ function FileTreeRow({
   return (
     <>
       <div
-        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""} ${gitIgnored(gitStatuses, path) ? "git-ignored" : ""}`}
+        className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""} ${path === menuPath ? "menu-open" : ""} ${gitIgnored(gitStatuses, path) ? "git-ignored" : ""} ${entry.name.startsWith(".") ? "dotfile" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
         data-drop-folder={entry.isDir ? path : undefined}
         data-drag-file={!entry.isDir && !renaming ? path : undefined}
